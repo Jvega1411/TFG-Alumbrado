@@ -166,10 +166,18 @@ claude -p \
 **Codex** (`/usr/local/bin/codex`):
 ```bash
 # First turn — system prompt embedded in prompt body
-codex exec --json -C "$REPO_DIR" -s workspace-write -a never "$SYSTEM_PROMPT\n\n$USER_PROMPT"
+codex exec \
+  -c 'approval_policy="never"' \
+  -c 'sandbox_mode="workspace-write"' \
+  --json \
+  -C "$REPO_DIR" \
+  "$SYSTEM_PROMPT\n\n$USER_PROMPT"
 
 # Subsequent turns — native session resume
-codex exec resume --json "$CODEX_SESSION_ID" "$USER_PROMPT"
+codex exec \
+  -c 'approval_policy="never"' \
+  -c 'sandbox_mode="workspace-write"' \
+  resume --json "$CODEX_SESSION_ID" "$USER_PROMPT"
 ```
 
 **Output parsing:**
@@ -259,7 +267,7 @@ The orchestrator is project-agnostic and lives in `claude-code/`. Only session a
 - [x] Consensus: orchestrator detects and auto-pauses for human confirmation
 - [x] Local repo edits allowed during the current session task; git push remains human-gated
 - [x] Claude invocation: `claude -p --output-format json --permission-mode acceptEdits --disallowedTools "Bash(git push*)" --system-prompt "..." --add-dir $REPO`; continuation via `--resume`
-- [x] Codex invocation: `codex exec --json -C $REPO -s workspace-write -a never "..."`; continuation via captured session ID, with `resume --last` only as fallback
+- [x] Codex invocation: `codex exec -c 'approval_policy="never"' -c 'sandbox_mode="workspace-write"' --json -C $REPO "..."`; continuation via captured session ID, with `resume --last` only as fallback
 - [x] Output parsing: Claude → JSON, Codex → JSONL event stream
 - [x] Codex system prompt: embedded in first prompt body (no flag available)
 - [x] Consensus/escalation signals: agents write `[CONSENSUS]:` or `[ESCALATE]:` tags
