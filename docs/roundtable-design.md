@@ -83,6 +83,7 @@ The chair (you) decides which dynamic applies per task.
 | Action | Autonomy level |
 |---|---|
 | Reading files, exploring codebase | Fully autonomous |
+| Editing local repo files | Allowed within the current session task |
 | Git pull | Autonomous — no confirmation needed |
 | Git commit | Autonomous within session |
 | Git push | Requires explicit human confirmation before executing |
@@ -116,7 +117,7 @@ roundtable.py   ──── ROUNDTABLE.md (chat log, git-tracked)
     └── codex "..."            → Codex's message (green)
 ```
 
-A single Python script runs in the terminal as the chat room. You type a task to open a session. The orchestrator calls each CLI as a subprocess, streams their replies in a colored terminal chat UI, and appends everything to `ROUNDTABLE.md`. Git commits at session close.
+A single Python script runs in the terminal as the chat room. You type a task to open a session. The orchestrator calls each CLI as a subprocess, streams their replies in a colored terminal chat UI, and appends everything to `ROUNDTABLE.md`. Agents may edit local files when the task requires it, but remote push is always gated by `/push`.
 
 ---
 
@@ -147,23 +148,28 @@ A single Python script runs in the terminal as the chat room. You type a task to
 # First turn in a session
 claude -p \
   --output-format json \
+  --permission-mode acceptEdits \
+  --disallowedTools "Bash(git push*)" \
   --system-prompt "$SYSTEM_PROMPT" \
   --add-dir "$REPO_DIR" \
   "$USER_PROMPT"
 
 # Subsequent turns — native session continuation (token-efficient)
-claude -c -p \
+claude -p \
   --output-format json \
+  --permission-mode acceptEdits \
+  --disallowedTools "Bash(git push*)" \
+  --resume "$CLAUDE_SESSION_ID" \
   "$USER_PROMPT"
 ```
 
 **Codex** (`/usr/local/bin/codex`):
 ```bash
 # First turn — system prompt embedded in prompt body
-codex exec --json -C "$REPO_DIR" "$SYSTEM_PROMPT\n\n$USER_PROMPT"
+codex exec --json -C "$REPO_DIR" -s workspace-write -a never "$SYSTEM_PROMPT\n\n$USER_PROMPT"
 
 # Subsequent turns — native session resume
-codex exec resume --last --json "$USER_PROMPT"
+codex exec resume --json "$CODEX_SESSION_ID" "$USER_PROMPT"
 ```
 
 **Output parsing:**
@@ -193,7 +199,7 @@ codex exec resume --last --json "$USER_PROMPT"
 ### 5. System Prompts (Lean)
 
 **Claude** — injected via `--system-prompt` flag:
-> "You are [Claude|Codex], participating in a developer round table on the TFG-Alumbrado project (read-only FINS/UDP gateway, Python/SQLAlchemy, RPi). Contribute your perspective on the current task. Be concise. Do not repeat what was already said. If you need the human's input, write [ESCALATE]: reason. If you believe consensus is reached, write [CONSENSUS]: summary."
+> "You are [Claude|Codex], participating in a developer round table on the TFG-Alumbrado project (read-only FINS/UDP gateway, Python/SQLAlchemy, RPi). Contribute your perspective on the current task. Be concise. Do not repeat what was already said. You may inspect and edit the local repo when the task requires it, but do not push to GitHub. If you need the human's input, write [ESCALATE]: reason. If you believe consensus is reached, write [CONSENSUS]: summary."
 
 **Codex** — no `--system-prompt` flag; embed instructions at the top of the first prompt, then rely on session resume for subsequent turns. Same content as above.
 
@@ -251,8 +257,9 @@ The orchestrator is project-agnostic and lives in `claude-code/`. Only session a
 - [x] Co-chair policy: task-dependent, assigned by chair at session open
 - [x] Script location: roundtable.py in claude-code/, logs in TFG-Alumbrado/
 - [x] Consensus: orchestrator detects and auto-pauses for human confirmation
-- [x] Claude invocation: `claude -p --output-format json --system-prompt "..." --add-dir $REPO`; continuation via `-c`
-- [x] Codex invocation: `codex exec --json -C $REPO "..."` ; continuation via `resume --last`
+- [x] Local repo edits allowed during the current session task; git push remains human-gated
+- [x] Claude invocation: `claude -p --output-format json --permission-mode acceptEdits --disallowedTools "Bash(git push*)" --system-prompt "..." --add-dir $REPO`; continuation via `--resume`
+- [x] Codex invocation: `codex exec --json -C $REPO -s workspace-write -a never "..."`; continuation via captured session ID, with `resume --last` only as fallback
 - [x] Output parsing: Claude → JSON, Codex → JSONL event stream
 - [x] Codex system prompt: embedded in first prompt body (no flag available)
 - [x] Consensus/escalation signals: agents write `[CONSENSUS]:` or `[ESCALATE]:` tags
