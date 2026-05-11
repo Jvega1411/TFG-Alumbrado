@@ -235,18 +235,20 @@ git commit -m "feat(schemas): modelos Pydantic CicloResponse, SeccionEstadoRespo
 
 ### Contexto de queries
 
-El engine se crea en `api/routes.py` a nivel de módulo usando `Config.DB_URL`. Cada request usa `Depends(get_db)`:
+El engine NO se crea al importar `api/routes.py`. `main.py` crea el engine con `Config.DB_URL` y lo inyecta llamando a `init_engine(engine)` antes de registrar/usar el router. Cada request usa `Depends(get_db)` y una `Session` propia:
 
 ```python
 def get_db():
-    with Session(engine) as session:
+    if _engine is None:
+        raise RuntimeError("Engine no inicializado — llamar init_engine() antes de usar el router")
+    with Session(_engine) as session:
         yield session
 ```
 
 Queries:
 - `GET /api/estado` → `db.query(Ciclo).order_by(Ciclo.id.desc()).first()`
-- `GET /api/secciones/actual` → subquery de `Ciclo.id` máximo, luego filtrar `SeccionEstado.ciclo_id == ultimo_id`
-- `GET /api/horarios` → `HorarioTramo` del último ciclo
+- `GET /api/secciones/actual` → último `Ciclo.id` con `fins_ok=True`, luego filtrar `SeccionEstado.ciclo_id == ultimo_id`
+- `GET /api/horarios` → `HorarioTramo` del último ciclo con `fins_ok=True`
 - `GET /api/historial/ciclos` → `Ciclo` en rango temporal con `limit`
 - `GET /api/historial/secciones` → `SeccionEstado` filtrado por `seccion_id`, rango temporal, `limit`
 

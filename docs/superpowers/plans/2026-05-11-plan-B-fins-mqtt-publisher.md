@@ -58,6 +58,18 @@ def test_validate_api_passes_without_mqtt_broker_host(self):
     finally:
         Config.MQTT_BROKER_HOST = original
 
+def test_validate_subscriber_does_not_require_fins_config(self):
+    """El subscriber corre en nodo IT: requiere MQTT+DB, pero no parámetros FINS/PLC."""
+    original_host = Config.MQTT_BROKER_HOST
+    original_plc_ip = Config.PLC_IP
+    try:
+        Config.MQTT_BROKER_HOST = '127.0.0.1'
+        Config.PLC_IP = 'ip-plc-invalida-para-it'
+        Config.validate_subscriber()
+    finally:
+        Config.MQTT_BROKER_HOST = original_host
+        Config.PLC_IP = original_plc_ip
+
 def test_mqtt_broker_port_default(self):
     assert Config.MQTT_BROKER_PORT == 1883
 
@@ -120,37 +132,52 @@ Cambiar el default de `ACQUISITION_INTERVAL_S` de `'30.0'` a `'10.0'`:
 ACQUISITION_INTERVAL_S: float = float(os.getenv('ACQUISITION_INTERVAL_S', '10.0'))
 ```
 
-**NO modificar `validate()` existente.** Añadir tres classmethods nuevos después del `validate()` existente. Cada proceso llama al método de su rol antes de arrancar:
+**NO modificar `validate()` existente.** Añadir helpers privados y tres classmethods nuevos después del `validate()` existente. Cada proceso llama al método de su rol antes de arrancar.
+
+Regla de separación OT/IT:
+- `validate_publisher()` es el único método que valida FINS/PLC, porque corre en RPi-OT.
+- `validate_subscriber()` valida solo MQTT+DB, porque corre en Nodo-IT y no debe depender de configuración FINS/PLC.
+- `validate_api()` valida solo API+DB, porque FastAPI tampoco necesita MQTT ni FINS.
 
 ```python
 @classmethod
-def validate_api(cls) -> None:
-    """Validación para el proceso FastAPI (nodo IT). No requiere MQTT."""
-    cls.validate()  # validaciones comunes (PLC, DB, etc.)
-    if not (1 <= cls.API_PORT <= 65535):
-        raise ValueError(f"API_PORT fuera de rango: {cls.API_PORT}")
+def _validate_db(cls) -> None:
     if not cls.DB_URL.strip():
         raise ValueError("DB_URL no puede estar vacia")
 
 @classmethod
-def validate_publisher(cls) -> None:
-    """Validación para el proceso FINS publisher (nodo OT). Requiere MQTT configurado."""
-    cls.validate()
+def _validate_mqtt(cls) -> None:
     if not cls.MQTT_BROKER_HOST.strip():
         raise ValueError("MQTT_BROKER_HOST no puede estar vacio — configurar en .env")
     if not (1 <= cls.MQTT_BROKER_PORT <= 65535):
         raise ValueError(f"MQTT_BROKER_PORT fuera de rango: {cls.MQTT_BROKER_PORT}")
     if not cls.MQTT_TOPIC.strip():
         raise ValueError("MQTT_TOPIC no puede estar vacio")
+    if not cls.MQTT_CLIENT_ID.strip():
+        raise ValueError("MQTT_CLIENT_ID no puede estar vacio")
     if cls.HEARTBEAT_INTERVAL_S <= 0:
         raise ValueError(f"HEARTBEAT_INTERVAL_S debe ser positivo: {cls.HEARTBEAT_INTERVAL_S}")
 
 @classmethod
+def validate_api(cls) -> None:
+    """Validación para el proceso FastAPI (nodo IT). No requiere MQTT ni FINS."""
+    cls._validate_db()
+    if not cls.API_HOST.strip():
+        raise ValueError("API_HOST no puede estar vacio")
+    if not (1 <= cls.API_PORT <= 65535):
+        raise ValueError(f"API_PORT fuera de rango: {cls.API_PORT}")
+
+@classmethod
+def validate_publisher(cls) -> None:
+    """Validación para el proceso FINS publisher (nodo OT). Requiere FINS + MQTT."""
+    cls.validate()  # validaciones FINS/UDP existentes
+    cls._validate_mqtt()
+
+@classmethod
 def validate_subscriber(cls) -> None:
-    """Validación para el proceso MQTT subscriber (nodo IT). Requiere MQTT + DB."""
-    cls.validate_publisher()  # subscriber también necesita MQTT
-    if not cls.DB_URL.strip():
-        raise ValueError("DB_URL no puede estar vacia")
+    """Validación para el proceso MQTT subscriber (nodo IT). Requiere MQTT + DB, no FINS."""
+    cls._validate_db()
+    cls._validate_mqtt()
 ```
 
 - [ ] **Step 4: Verificar que todos los tests de settings pasan**
@@ -907,5 +934,5 @@ git commit -m "feat(publisher): MQTT publisher con detección de cambios y heart
 - Spec B cubierto: read_all_variables (Task 2) ✅, build_payload (Task 3) ✅, change detection + heartbeat (Task 4) ✅, config MQTT (Task 1) ✅
 - `read_ar_range` existe en fins/client.py (línea 71) ✅
 - `datetime.now(tz=timezone.utc)` en publisher.py ✅
-- `dict | None` requiere Python 3.10+; target es 3.12 ✅
+- Tipado compatible Python 3.9+: publisher usa `Optional[dict]`, no `dict | None` ✅
 - Tests de publisher usan mock de FINSClient y mqtt.Client, sin UDP real ✅
