@@ -8,29 +8,50 @@ Lee estados desde un PLC Omron Sysmac CJ2M CPU32 mediante FINS/UDP y persiste da
 No es sistema de mando. No debe modificar el PLC ni la instalación.
 
 ## Contexto técnico
-- PLC: Omron Sysmac CJ2M CPU32
-- FINS/UDP: puerto 9600
-- PLC IP: 192.168.250.1
+
+### PLC
+- Omron Sysmac CJ2M CPU32, IP 192.168.250.1, FINS node 1
+- FINS/UDP puerto 9600
 - Instalación: 1104 luminarias, 172 cerchas, 112 secciones
 - Jerarquía: Sección (112) → Cercha (172) → Luminaria (1104)
 - El PLC expone estado a nivel de sección (H11–H31, 112 bits por grupo de estado)
-- Stack: Python 3.x, SQLAlchemy 2.0, Alembic
-- BD: `BD_Estados`, `BD_Historizacion`
+
+### Nodo OT — Raspberry Pi (Ubuntu 24.04 LTS, aarch64)
+- eth0: red OT 192.168.250.56, FINS node 56 — habla FINS con el PLC
+- eth1 (adaptador USB-Eth): subred de enlace hacia el Lenovo (⚠️ PENDIENTE confirmar nombre exacto de interfaz y subred)
+- Usuarios: `master` (admin/sudo), `gwsvc` (servicio, sin sudo)
 - Dev: `/home/master/dev/alumbrado-gateway`
 - Prod: `/opt/alumbrado-gateway`
-- Servicio: usuario `gwsvc`
+- Rol Fase 1: FINS reader + SQLite + FastAPI (todo en RPi)
+- Rol Fase 2: FINS reader + paho-mqtt publisher únicamente (sin BD ni API)
 
-## Estrategia de base de datos por fases
+### Nodo IT — Lenovo S500 (Windows 10, Intel i3)
+- NIC1: subred de enlace con RPi (⚠️ PENDIENTE confirmar IP, propuesta 10.0.0.2/30)
+- NIC2: red corporativa de fábrica
+- Rol Fase 2: broker Mosquitto + SQL Server Express + FastAPI
+- Asignado por informática: 2026-05-11
 
-**Fase 1 — RPi (Ubuntu):** SQLAlchemy + SQLite
-- SQL Server Express no corre en Linux; SQLite es el motor provisional
-- Los modelos SQLAlchemy se escriben una sola vez y son válidos para ambas fases
-- `BD_Estados` y `BD_Historizacion` son dos ficheros `.db` en Fase 1
+### Principio de aislamiento IT/OT (normativa)
+- Comunicación estrictamente unidireccional OT→IT: la RPi solo publica MQTT, nunca recibe del Lenovo
+- El Lenovo nunca inicia conexión hacia la RPi ni tiene visibilidad de 192.168.250.0/24
+- Ver `docs/red_ot_aislamiento.md` para comandos de firewall/sysctl de la RPi
 
-**Fase 2 — DMZ (Windows 10):** SQLAlchemy + SQL Server Express (gratuito)
-- Mismo modelo, misma capa SQLAlchemy
-- Alembic gestiona la migración del esquema al nuevo motor
-- Solo cambia la connection string en `.env`
+### Stack
+- BD: `BD_Estados`, `BD_Historizacion`
+- Python 3.x (target producción: 3.12.x en RPi), SQLAlchemy 2.0, Alembic
+
+## Estrategia por fases
+
+**Fase 1 — RPi standalone:** Python + SQLAlchemy + SQLite + FastAPI, todo en la RPi.
+- SQL Server Express no corre en Linux; SQLite es el motor provisional.
+- Los modelos SQLAlchemy se escriben una sola vez y son válidos para ambas fases.
+- `BD_Estados` y `BD_Historizacion` son dos ficheros `.db`.
+
+**Fase 2 — arquitectura dos nodos (RPi + Lenovo):**
+- RPi adelgaza: solo FINS reader + paho-mqtt publisher. Sin BD ni API.
+- Lenovo: broker Mosquitto recibe los datos, SQL Server Express los persiste, FastAPI los expone.
+- Transporte OT→IT: MQTT sobre subred de enlace RPi↔Lenovo (unidireccional).
+- Migración de esquema: `alembic upgrade head` en el Lenovo. Solo cambia la connection string en `.env`.
 
 No usar engines ni queries específicas de un solo motor. Todo debe funcionar con SQLite y SQL Server sin cambios en el código de modelo.
 
