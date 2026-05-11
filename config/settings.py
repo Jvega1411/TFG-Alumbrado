@@ -42,6 +42,16 @@ class Config:
     # Logging
     LOG_DIR: Path = _project_root / os.getenv('LOG_DIR', 'logs')
 
+    # SQLite — Fase 1 (sobreescribir en .env para Fase 2 con SQL Server)
+    DB_ESTADOS_URL: str = os.getenv(
+        'DB_ESTADOS_URL',
+        'sqlite:///' + str(_project_root / 'data' / 'bd_estados.db'),
+    )
+    DB_HIST_URL: str = os.getenv(
+        'DB_HIST_URL',
+        'sqlite:///' + str(_project_root / 'data' / 'bd_historizacion.db'),
+    )
+
     @staticmethod
     def _parse_int(value: str) -> int:
         return _parse_int(value)

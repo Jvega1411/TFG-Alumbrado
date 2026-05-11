@@ -50,3 +50,11 @@ class TestConfigValidation:
         assert Config.DB_PORT == 1433
         assert Config.ACQUISITION_INTERVAL_S == 30.0
         assert Config.ACQUISITION_INTERVAL_S > 0
+
+    def test_db_estados_url_default_is_sqlite(self):
+        assert Config.DB_ESTADOS_URL.startswith('sqlite:///')
+        assert 'bd_estados.db' in Config.DB_ESTADOS_URL
+
+    def test_db_hist_url_default_is_sqlite(self):
+        assert Config.DB_HIST_URL.startswith('sqlite:///')
+        assert 'bd_historizacion.db' in Config.DB_HIST_URL
