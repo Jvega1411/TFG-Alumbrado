@@ -4,11 +4,16 @@
 
 **Goal:** Recibir mensajes MQTT del topic `alumbrado/estado` y persistir cada ciclo en SQLite (tablas `ciclo`, `seccion_estado`, `horario_tramo`).
 
-**Architecture:** `subscriber/listener.py` expone `process_message(payload_bytes, session)` (función pura testeable con SQLite en memoria) y `run_subscriber()` (loop MQTT con paho). El subscriber tiene su propia sesión SQLAlchemy, independiente de FastAPI. Los modelos SQLAlchemy ya están implementados en `model/estados.py`.
+**Architecture:** `subscriber/payload_schema.py` define un modelo Pydantic que valida cada payload recibido antes de escribir a BD (contrato estricto: 112 secciones, IDs 1..112, raw_words, tipos). `subscriber/listener.py` expone `process_message(payload_bytes, session)` (función pura testeable con SQLite en memoria) y `run_subscriber()` (loop MQTT con paho). El subscriber tiene su propia sesión SQLAlchemy, independiente de FastAPI. Los modelos SQLAlchemy ya están implementados en `model/estados.py`.
 
-**Tech Stack:** Python 3.12, paho-mqtt, SQLAlchemy 2.0, SQLite (WAL mode), model/database.py ya implementado y auditado.
+**Tech Stack:** Python 3.12, paho-mqtt, SQLAlchemy 2.0, Pydantic v2, SQLite (WAL mode), model/database.py ya implementado y auditado.
 
 **Invariante obligatoria:** Nunca `datetime.utcnow()`. Siempre `datetime.fromisoformat()` para parsear el campo `ts` del payload (que llega como ISO8601 UTC).
+
+**Distinción de errores en process_message:**
+- `bytes` no decodificables (UTF-8) o JSON inválido → log ERROR, no escribe, continúa
+- Validación Pydantic falla (contrato de payload) → log ERROR con detalle, no escribe, continúa
+- SQLAlchemy lanza excepción → log ERROR, rollback, continúa
 
 ---
 
@@ -17,15 +22,224 @@
 | Fichero | Acción | Responsabilidad |
 |---|---|---|
 | `subscriber/__init__.py` | Crear | Vacío — marca el paquete |
+| `subscriber/payload_schema.py` | Crear | Validación Pydantic del payload MQTT entrante |
 | `subscriber/listener.py` | Crear | process_message() + run_subscriber() |
+| `tests/test_payload_schema.py` | Crear | Tests del schema de validación |
 | `tests/test_listener.py` | Crear | Tests de process_message con SQLite en memoria |
 
 ---
 
-## Task 1: process_message() — lógica de escritura a BD
+## Task 1: payload_schema.py — validación Pydantic del payload MQTT
 
 **Files:**
 - Create: `subscriber/__init__.py`
+- Create: `subscriber/payload_schema.py`
+- Create: `tests/test_payload_schema.py`
+
+- [ ] **Step 1: Crear subscriber/__init__.py (vacío)**
+
+```bash
+touch subscriber/__init__.py
+```
+
+Contenido: archivo vacío.
+
+- [ ] **Step 2: Escribir tests del schema**
+
+Crear `tests/test_payload_schema.py`:
+
+```python
+import pytest
+from subscriber.payload_schema import MQTTPayload, parse_payload
+
+
+def _valid_bytes(fins_ok: bool = True) -> bytes:
+    import json
+    secciones = [{"id": i+1, "automatico": False, "manual": False, "horario_activo": False} for i in range(112)]
+    if fins_ok:
+        data = {
+            "ts": "2026-05-12T08:30:00+00:00",
+            "fins_ok": True,
+            "fins_error": None,
+            "plc_reloj": {"seg": 0, "min": 30, "hora": 8, "dia": 12, "mes": 5, "anio": 2026, "diasem": 2},
+            "modo": {"modfunalu": 0, "fotocelula_entrada": False, "fotocelula_mem_fun": False, "fotocelula_mem_act": False},
+            "secciones": secciones,
+            "horarios": {"raw_words": [0] * 28},
+            "diagnostico": {"cycle_time_error": False, "low_battery": False, "io_verify_error": False},
+        }
+    else:
+        data = {"ts": "2026-05-12T08:30:00+00:00", "fins_ok": False, "fins_error": "timeout"}
+    return json.dumps(data).encode("utf-8")
+
+
+class TestParsePayload:
+
+    def test_valid_fins_ok_payload_parses(self):
+        payload = parse_payload(_valid_bytes(fins_ok=True))
+        assert payload.fins_ok is True
+        assert len(payload.secciones) == 112
+
+    def test_valid_fins_error_payload_parses(self):
+        payload = parse_payload(_valid_bytes(fins_ok=False))
+        assert payload.fins_ok is False
+        assert payload.fins_error == "timeout"
+        assert payload.secciones == []
+
+    def test_missing_ts_raises(self):
+        import json
+        data = json.dumps({"fins_ok": True}).encode("utf-8")
+        with pytest.raises(ValueError, match="ts"):
+            parse_payload(data)
+
+    def test_invalid_json_raises_valueerror(self):
+        with pytest.raises(ValueError, match="JSON"):
+            parse_payload(b"not valid json {{{")
+
+    def test_invalid_utf8_raises_valueerror(self):
+        with pytest.raises(ValueError, match="UTF"):
+            parse_payload(b"\xff\xfe invalid bytes")
+
+    def test_wrong_seccion_count_raises(self):
+        import json
+        secciones = [{"id": i+1, "automatico": False, "manual": False, "horario_activo": False} for i in range(111)]
+        data = {
+            "ts": "2026-05-12T08:30:00+00:00", "fins_ok": True, "fins_error": None,
+            "plc_reloj": {"seg": 0, "min": 0, "hora": 0, "dia": 1, "mes": 1, "anio": 2026, "diasem": 1},
+            "modo": {"modfunalu": 0, "fotocelula_entrada": False, "fotocelula_mem_fun": False, "fotocelula_mem_act": False},
+            "secciones": secciones,  # 111 en vez de 112
+            "horarios": {"raw_words": [0] * 28},
+            "diagnostico": {"cycle_time_error": False, "low_battery": False, "io_verify_error": False},
+        }
+        with pytest.raises(ValueError, match="112"):
+            parse_payload(json.dumps(data).encode("utf-8"))
+
+    def test_duplicate_seccion_id_raises(self):
+        import json
+        secciones = [{"id": 1, "automatico": False, "manual": False, "horario_activo": False}] * 112
+        data = {
+            "ts": "2026-05-12T08:30:00+00:00", "fins_ok": True, "fins_error": None,
+            "plc_reloj": {"seg": 0, "min": 0, "hora": 0, "dia": 1, "mes": 1, "anio": 2026, "diasem": 1},
+            "modo": {"modfunalu": 0, "fotocelula_entrada": False, "fotocelula_mem_fun": False, "fotocelula_mem_act": False},
+            "secciones": secciones,  # todos id=1
+            "horarios": {"raw_words": [0] * 28},
+            "diagnostico": {"cycle_time_error": False, "low_battery": False, "io_verify_error": False},
+        }
+        with pytest.raises(ValueError, match="duplicados"):
+            parse_payload(json.dumps(data).encode("utf-8"))
+```
+
+- [ ] **Step 3: Verificar que los tests fallan**
+
+```
+pytest tests/test_payload_schema.py -v
+```
+
+Expected: `FAILED` con `ModuleNotFoundError: No module named 'subscriber.payload_schema'`
+
+- [ ] **Step 4: Implementar subscriber/payload_schema.py**
+
+Crear `subscriber/payload_schema.py`:
+
+```python
+import json
+from datetime import datetime
+from typing import List, Optional
+
+from pydantic import BaseModel, field_validator, model_validator
+
+
+class SeccionPayload(BaseModel):
+    id: int
+    automatico: bool
+    manual: bool
+    horario_activo: bool
+
+
+class RelojPayload(BaseModel):
+    seg: int
+    min: int
+    hora: int
+    dia: int
+    mes: int
+    anio: int
+    diasem: int
+
+
+class ModoPayload(BaseModel):
+    modfunalu: int
+    fotocelula_entrada: bool
+    fotocelula_mem_fun: bool
+    fotocelula_mem_act: bool
+
+
+class HorariosPayload(BaseModel):
+    raw_words: List[int]
+
+
+class DiagnosticoPayload(BaseModel):
+    cycle_time_error: bool
+    low_battery: bool
+    io_verify_error: bool
+
+
+class MQTTPayload(BaseModel):
+    ts: datetime
+    fins_ok: bool
+    fins_error: Optional[str] = None
+    plc_reloj: Optional[RelojPayload] = None
+    modo: Optional[ModoPayload] = None
+    secciones: List[SeccionPayload] = []
+    horarios: Optional[HorariosPayload] = None
+    diagnostico: Optional[DiagnosticoPayload] = None
+
+    @model_validator(mode="after")
+    def validate_secciones_when_fins_ok(self) -> "MQTTPayload":
+        if self.fins_ok:
+            if len(self.secciones) != 112:
+                raise ValueError(
+                    f"fins_ok=True requiere exactamente 112 secciones, recibidas: {len(self.secciones)}"
+                )
+            ids = [s.id for s in self.secciones]
+            if len(set(ids)) != 112:
+                raise ValueError("IDs de secciones duplicados en el payload")
+            if sorted(ids) != list(range(1, 113)):
+                raise ValueError("IDs de secciones deben ser 1..112")
+        return self
+
+
+def parse_payload(payload_bytes: bytes) -> MQTTPayload:
+    """Decodifica y valida un payload MQTT. Lanza ValueError si algo falla."""
+    try:
+        text = payload_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"UTF-8 decode error: {exc}") from exc
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"JSON parse error: {exc}") from exc
+    return MQTTPayload.model_validate(data)
+```
+
+- [ ] **Step 5: Verificar que los tests pasan**
+
+```
+pytest tests/test_payload_schema.py -v
+```
+
+Expected: todos PASSED
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add subscriber/__init__.py subscriber/payload_schema.py tests/test_payload_schema.py
+git commit -m "feat(subscriber): payload_schema — validación Pydantic estricta del payload MQTT"
+```
+
+---
+
+## Task 2: process_message() — lógica de escritura a BD
+
+**Files:**
 - Create: `subscriber/listener.py`
 - Create: `tests/test_listener.py`
 
@@ -267,95 +481,111 @@ class TestProcessMessageMalformedPayload:
         assert db_session.query(Ciclo).count() == 0
 ```
 
-- [ ] **Step 3: Verificar que los tests fallan**
+- [ ] **Step 3: Añadir test de payload incompleto (fins_ok=True con 111 secciones)**
+
+Añadir a `TestProcessMessageMalformedPayload` en `tests/test_listener.py`:
+
+```python
+    def test_incomplete_secciones_creates_nothing(self, db_session):
+        import json
+        secciones = [{"id": i+1, "automatico": False, "manual": False, "horario_activo": False} for i in range(111)]
+        data = {
+            "ts": "2026-05-12T08:30:00+00:00", "fins_ok": True, "fins_error": None,
+            "plc_reloj": {"seg": 0, "min": 0, "hora": 0, "dia": 1, "mes": 1, "anio": 2026, "diasem": 1},
+            "modo": {"modfunalu": 0, "fotocelula_entrada": False, "fotocelula_mem_fun": False, "fotocelula_mem_act": False},
+            "secciones": secciones,  # 111 en vez de 112 — violación de contrato
+            "horarios": {"raw_words": [0] * 28},
+            "diagnostico": {"cycle_time_error": False, "low_battery": False, "io_verify_error": False},
+        }
+        process_message(json.dumps(data).encode("utf-8"), db_session)
+        assert db_session.query(Ciclo).count() == 0
+```
+
+- [ ] **Step 4: Verificar que los tests fallan**
 
 ```
 pytest tests/test_listener.py -v
 ```
 
-Expected: `FAILED` con `ModuleNotFoundError: No module named 'subscriber'`
+Expected: `FAILED` con `ModuleNotFoundError: No module named 'subscriber.listener'`
 
-- [ ] **Step 4: Implementar subscriber/listener.py**
+- [ ] **Step 5: Implementar subscriber/listener.py**
 
-Crear `subscriber/listener.py`:
+Crear `subscriber/listener.py`. Usa `parse_payload` de `subscriber/payload_schema.py` para validar antes de escribir. Distingue tres tipos de error:
+- `ValueError` (decode/JSON/validación contrato) → log ERROR sin rollback (BD intacta)
+- `SQLAlchemyError` → log ERROR + rollback
+- Resto de excepciones → log ERROR + rollback (defensa)
 
 ```python
-import json
 import logging
-from datetime import datetime
 
+from pydantic import ValidationError
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from model.estados import Ciclo, HorarioTramo, SeccionEstado
+from subscriber.payload_schema import parse_payload
 
 logger = logging.getLogger(__name__)
 
 
 def process_message(payload_bytes: bytes, session: Session) -> None:
-    """Parsea payload MQTT y escribe a BD. Silencia errores: no detiene el loop."""
+    """Parsea payload MQTT y escribe a BD. Distingue errores; no detiene el loop."""
     try:
-        data = json.loads(payload_bytes.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        logger.error("Payload MQTT malformado: %s", exc)
+        payload = parse_payload(payload_bytes)
+    except (ValueError, ValidationError) as exc:
+        logger.error("Payload MQTT inválido (descartado): %s", exc)
         return
 
     try:
-        _write_to_db(data, session)
+        _write_to_db(payload, session)
+    except SQLAlchemyError as exc:
+        logger.error("Error SQLAlchemy (rollback): %s", exc)
+        session.rollback()
     except Exception as exc:
-        logger.error("Error escribiendo en BD: %s", exc)
+        logger.error("Error inesperado en BD (rollback): %s", exc)
         session.rollback()
 
 
-def _write_to_db(data: dict, session: Session) -> None:
-    ts_str = data.get("ts")
-    if not ts_str:
-        raise ValueError("Campo 'ts' ausente en payload")
-    try:
-        ts = datetime.fromisoformat(ts_str)
-    except (ValueError, TypeError) as exc:
-        raise ValueError(f"ts invalido: {ts_str!r}") from exc
-
-    fins_ok = bool(data.get("fins_ok", False))
-    modo = data.get("modo", {}) if fins_ok else {}
-    reloj = data.get("plc_reloj", {}) if fins_ok else {}
-    diag = data.get("diagnostico", {}) if fins_ok else {}
+def _write_to_db(payload, session: Session) -> None:
+    ts = payload.ts
 
     ciclo = Ciclo(
         timestamp=ts,
-        fins_ok=fins_ok,
-        fins_error=data.get("fins_error"),
-        modfunalu=modo.get("modfunalu"),
-        fotocelula_entrada=modo.get("fotocelula_entrada"),
-        fotocelula_mem_fun=modo.get("fotocelula_mem_fun"),
-        fotocelula_mem_act=modo.get("fotocelula_mem_act"),
-        plc_seg=reloj.get("seg"),
-        plc_min=reloj.get("min"),
-        plc_hora=reloj.get("hora"),
-        plc_dia=reloj.get("dia"),
-        plc_mes=reloj.get("mes"),
-        plc_anio=reloj.get("anio"),
-        plc_diasem=reloj.get("diasem"),
-        cycle_time_error=diag.get("cycle_time_error"),
-        low_battery=diag.get("low_battery"),
-        io_verify_error=diag.get("io_verify_error"),
+        fins_ok=payload.fins_ok,
+        fins_error=payload.fins_error,
+        modfunalu=payload.modo.modfunalu if payload.modo else None,
+        fotocelula_entrada=payload.modo.fotocelula_entrada if payload.modo else None,
+        fotocelula_mem_fun=payload.modo.fotocelula_mem_fun if payload.modo else None,
+        fotocelula_mem_act=payload.modo.fotocelula_mem_act if payload.modo else None,
+        plc_seg=payload.plc_reloj.seg if payload.plc_reloj else None,
+        plc_min=payload.plc_reloj.min if payload.plc_reloj else None,
+        plc_hora=payload.plc_reloj.hora if payload.plc_reloj else None,
+        plc_dia=payload.plc_reloj.dia if payload.plc_reloj else None,
+        plc_mes=payload.plc_reloj.mes if payload.plc_reloj else None,
+        plc_anio=payload.plc_reloj.anio if payload.plc_reloj else None,
+        plc_diasem=payload.plc_reloj.diasem if payload.plc_reloj else None,
+        cycle_time_error=payload.diagnostico.cycle_time_error if payload.diagnostico else None,
+        low_battery=payload.diagnostico.low_battery if payload.diagnostico else None,
+        io_verify_error=payload.diagnostico.io_verify_error if payload.diagnostico else None,
     )
     session.add(ciclo)
     session.flush()  # obtiene ciclo.id antes de insertar FK hijos
 
-    if fins_ok:
-        for s in data.get("secciones", []):
+    if payload.fins_ok:
+        for s in payload.secciones:
             session.add(SeccionEstado(
                 ciclo_id=ciclo.id,
                 timestamp=ts,
-                seccion_id=s["id"],
-                automatico=bool(s["automatico"]),
-                manual=bool(s["manual"]),
-                horario_activo=bool(s["horario_activo"]),
+                seccion_id=s.id,
+                automatico=s.automatico,
+                manual=s.manual,
+                horario_activo=s.horario_activo,
             ))
 
         # ⚠️ PENDIENTE P1: formato real de raw_words desconocido hasta smoke test FINS
         # Provisional: 2 words por tramo, inicio=raw_words[i*2], fin=raw_words[i*2+1]
-        raw_words = data.get("horarios", {}).get("raw_words", [])
+        raw_words = payload.horarios.raw_words if payload.horarios else []
         for i in range(12):
             session.add(HorarioTramo(
                 ciclo_id=ciclo.id,
@@ -367,15 +597,15 @@ def _write_to_db(data: dict, session: Session) -> None:
     session.commit()
 ```
 
-- [ ] **Step 5: Verificar que todos los tests de listener pasan**
+- [ ] **Step 6: Verificar que todos los tests de listener pasan**
 
 ```
 pytest tests/test_listener.py -v
 ```
 
-Expected: todos PASSED (34 tests)
+Expected: todos PASSED
 
-- [ ] **Step 6: Verificar suite completa sin regresiones**
+- [ ] **Step 7: Verificar suite completa sin regresiones**
 
 ```
 pytest tests/ -v
@@ -383,16 +613,16 @@ pytest tests/ -v
 
 Expected: todos PASSED
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add subscriber/__init__.py subscriber/listener.py tests/test_listener.py
-git commit -m "feat(subscriber): process_message — parseo MQTT y escritura SQLite"
+git add subscriber/listener.py tests/test_listener.py
+git commit -m "feat(subscriber): process_message — validación payload + distinción errores BD"
 ```
 
 ---
 
-## Task 2: run_subscriber() — loop MQTT con paho
+## Task 3: run_subscriber() — loop MQTT con paho
 
 **Files:**
 - Modify: `subscriber/listener.py`

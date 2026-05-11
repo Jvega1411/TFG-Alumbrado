@@ -448,6 +448,8 @@ Expected: `FAILED` con errores de import (api/routes.py tiene solo un comentario
 
 - [ ] **Step 3: Implementar api/routes.py**
 
+`api/routes.py` NO crea el engine. El engine lo inyecta `main.py` llamando a `init_engine(e)`. Esto evita que importar el módulo cree una BD y permite inyectar un engine de test sin monkeypatch frágil.
+
 Reemplazar el contenido de `api/routes.py`:
 
 ```python
@@ -457,8 +459,6 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from config.settings import Config
-from model.database import Base, create_db_engine
 from model.estados import Ciclo, HorarioTramo, SeccionEstado
 from schemas.lectura import (
     CicloResponse,
@@ -467,14 +467,20 @@ from schemas.lectura import (
     SeccionHistorialResponse,
 )
 
-engine = create_db_engine(Config.DB_URL)
-Base.metadata.create_all(engine)
+# Inicializado por main.py vía init_engine(). None hasta entonces.
+_engine = None
 
 router = APIRouter()
 
 
+def init_engine(engine) -> None:
+    """Inyecta el engine SQLAlchemy. Llamar desde main.py antes de registrar el router."""
+    global _engine
+    _engine = engine
+
+
 def get_db():
-    with Session(engine) as session:
+    with Session(_engine) as session:
         yield session
 
 
@@ -488,9 +494,17 @@ def get_estado(db: Session = Depends(get_db)):
 
 @router.get("/api/secciones/actual", response_model=List[SeccionEstadoResponse])
 def get_secciones_actual(db: Session = Depends(get_db)):
-    ultimo_id = db.query(Ciclo.id).order_by(Ciclo.id.desc()).limit(1).scalar()
+    # Busca el último ciclo con fins_ok=True (que tiene filas de secciones)
+    # Si el último ciclo es fins_ok=False, esto devuelve los datos del último ciclo válido
+    ultimo_id = (
+        db.query(Ciclo.id)
+        .filter(Ciclo.fins_ok == True)  # noqa: E712
+        .order_by(Ciclo.id.desc())
+        .limit(1)
+        .scalar()
+    )
     if ultimo_id is None:
-        raise HTTPException(status_code=404, detail="Sin datos")
+        raise HTTPException(status_code=404, detail="Sin datos válidos")
     return (
         db.query(SeccionEstado)
         .filter(SeccionEstado.ciclo_id == ultimo_id)
@@ -501,9 +515,16 @@ def get_secciones_actual(db: Session = Depends(get_db)):
 
 @router.get("/api/horarios", response_model=List[HorarioTramoResponse])
 def get_horarios(db: Session = Depends(get_db)):
-    ultimo_id = db.query(Ciclo.id).order_by(Ciclo.id.desc()).limit(1).scalar()
+    # Igual que secciones: último ciclo con fins_ok=True
+    ultimo_id = (
+        db.query(Ciclo.id)
+        .filter(Ciclo.fins_ok == True)  # noqa: E712
+        .order_by(Ciclo.id.desc())
+        .limit(1)
+        .scalar()
+    )
     if ultimo_id is None:
-        raise HTTPException(status_code=404, detail="Sin datos")
+        raise HTTPException(status_code=404, detail="Sin datos válidos")
     return (
         db.query(HorarioTramo)
         .filter(HorarioTramo.ciclo_id == ultimo_id)
@@ -545,7 +566,88 @@ def get_historial_secciones(
     return q.order_by(SeccionEstado.timestamp.desc()).limit(limit).all()
 ```
 
-- [ ] **Step 4: Implementar main.py**
+- [ ] **Step 4: Actualizar el fixture de tests para usar init_engine en vez de monkeypatch**
+
+En `tests/test_api.py`, reemplazar el fixture `api_client`:
+
+```python
+@pytest.fixture
+def api_client(populated_engine):
+    """TestClient con engine inyectado vía init_engine."""
+    import api.routes as routes_module
+    routes_module.init_engine(populated_engine)
+
+    from main import app
+    return TestClient(app)
+```
+
+Y actualizar `test_returns_404_when_empty` en `TestGetEstado` y `TestGetSeccionesActual`:
+
+```python
+    def test_returns_404_when_empty(self, test_engine):
+        import api.routes as routes_module
+        routes_module.init_engine(test_engine)
+        from main import app
+        client = TestClient(app)
+        resp = client.get("/api/estado")
+        assert resp.status_code == 404
+```
+
+(Aplicar el mismo patrón en `TestGetSeccionesActual.test_returns_404_when_empty`.)
+
+- [ ] **Step 5: Añadir test de "secciones devuelven último ciclo válido durante fallo FINS"**
+
+Añadir a `tests/test_api.py`:
+
+```python
+class TestUltimoCicloValido:
+
+    def test_secciones_actual_devuelve_ultimo_ciclo_fins_ok_durante_fallo(self, populated_engine):
+        """Si el último ciclo es fins_ok=False, secciones/actual devuelve el ciclo anterior válido."""
+        import api.routes as routes_module
+        routes_module.init_engine(populated_engine)
+
+        # Añadir un ciclo fins_ok=False después del ciclo válido existente
+        with Session(populated_engine) as session:
+            ciclo_error = Ciclo(
+                timestamp=_utc_dt(hour=9),
+                fins_ok=False,
+                fins_error="timeout",
+                modfunalu=None,
+            )
+            session.add(ciclo_error)
+            session.commit()
+
+        from main import app
+        client = TestClient(app)
+        resp = client.get("/api/secciones/actual")
+        assert resp.status_code == 200
+        # Debe devolver las 112 secciones del ciclo fins_ok=True anterior
+        assert len(resp.json()) == 112
+
+    def test_secciones_actual_404_cuando_nunca_hubo_ciclo_valido(self, test_engine):
+        """Si no hay ningún ciclo fins_ok=True, devuelve 404."""
+        import api.routes as routes_module
+        routes_module.init_engine(test_engine)
+
+        # Insertar solo un ciclo fins_ok=False
+        with Session(test_engine) as session:
+            ciclo_error = Ciclo(
+                timestamp=_utc_dt(),
+                fins_ok=False,
+                fins_error="timeout",
+                modfunalu=None,
+            )
+            session.add(ciclo_error)
+            session.commit()
+
+        from main import app
+        client = TestClient(app)
+        resp = client.get("/api/secciones/actual")
+        assert resp.status_code == 404
+```
+
+- [ ] **Step 6: Implementar main.py**
 
 Reemplazar el contenido de `main.py`:
 
@@ -557,7 +659,13 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from api.routes import router
+from api.routes import init_engine, router
+from config.settings import Config
+from model.database import Base, create_db_engine
+
+_engine = create_db_engine(Config.DB_URL)
+Base.metadata.create_all(_engine)  # crea tablas si no existen — solo desarrollo/primera vez
+init_engine(_engine)
 
 app = FastAPI(title="Alumbrado Gateway")
 app.include_router(router)
@@ -575,7 +683,7 @@ def serve_index():
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+    uvicorn.run("main:app", host=Config.API_HOST, port=Config.API_PORT, reload=False)
 ```
 
 - [ ] **Step 5: Verificar que todos los tests de API pasan**
@@ -1176,7 +1284,12 @@ function renderHorarios(tramos) {
   tbody.innerHTML = '';
   tramos.forEach(t => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${t.tramo_id}</td><td>${t.inicio_raw ?? '—'}</td><td>${t.fin_raw ?? '—'}</td>`;
+    const cells = [t.tramo_id, t.inicio_raw ?? '—', t.fin_raw ?? '—'];
+    cells.forEach(val => {
+      const td = document.createElement('td');
+      td.textContent = val;
+      tr.appendChild(td);
+    });
     tbody.appendChild(tr);
   });
 }
@@ -1222,13 +1335,18 @@ function renderHistorial(rows, reset) {
   if (reset) tbody.innerHTML = '';
   rows.forEach(r => {
     const tr = document.createElement('tr');
-    const ts = new Date(r.timestamp).toLocaleString('es-ES');
-    tr.innerHTML = `
-      <td>${ts}</td>
-      <td>${r.seccion_id}</td>
-      <td>${r.automatico ? '✓' : '—'}</td>
-      <td>${r.manual ? '✓' : '—'}</td>
-      <td>${r.horario_activo ? '✓' : '—'}</td>`;
+    const vals = [
+      new Date(r.timestamp).toLocaleString('es-ES'),
+      r.seccion_id,
+      r.automatico ? '✓' : '—',
+      r.manual ? '✓' : '—',
+      r.horario_activo ? '✓' : '—',
+    ];
+    vals.forEach(val => {
+      const td = document.createElement('td');
+      td.textContent = val;
+      tr.appendChild(td);
+    });
     tbody.appendChild(tr);
   });
 }
@@ -1269,7 +1387,7 @@ Arrancar el servidor:
 python main.py
 ```
 
-Expected: `INFO:     Uvicorn running on http://0.0.0.0:8000`
+Expected: `INFO:     Uvicorn running on http://127.0.0.1:8000` (default API_HOST=127.0.0.1; para exponer en red configurar API_HOST en .env)
 
 Abrir `http://localhost:8000` en el navegador y verificar:
 

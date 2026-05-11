@@ -36,8 +36,19 @@
 Al final de `TestConfigValidation` en `tests/test_settings.py`:
 
 ```python
-def test_mqtt_broker_host_default(self):
-    assert Config.MQTT_BROKER_HOST == '10.0.0.2'
+def test_mqtt_broker_host_default_is_empty(self):
+    # Default vacío: la subred enlace IT está pendiente de confirmar (PENDIENTE P5)
+    # MQTT_BROKER_HOST debe configurarse explícitamente en .env; arrancar sin él falla validate()
+    assert Config.MQTT_BROKER_HOST == ''
+
+def test_mqtt_broker_host_validate_fails_if_empty(self):
+    original = Config.MQTT_BROKER_HOST
+    try:
+        Config.MQTT_BROKER_HOST = ''
+        with pytest.raises(ValueError, match="MQTT_BROKER_HOST"):
+            Config.validate()
+    finally:
+        Config.MQTT_BROKER_HOST = original
 
 def test_mqtt_broker_port_default(self):
     assert Config.MQTT_BROKER_PORT == 1883
@@ -53,6 +64,13 @@ def test_heartbeat_interval_default(self):
 
 def test_acquisition_interval_default_is_10(self):
     assert Config.ACQUISITION_INTERVAL_S == 10.0
+
+def test_api_host_default_is_localhost(self):
+    # Default 127.0.0.1: no exponer en todas las interfaces sin configuración explícita
+    assert Config.API_HOST == '127.0.0.1'
+
+def test_api_port_default(self):
+    assert Config.API_PORT == 8000
 ```
 
 - [ ] **Step 2: Verificar que los tests fallan**
@@ -68,12 +86,17 @@ Expected: `FAILED` con `AttributeError`
 En `config/settings.py`, dentro de la clase `Config`, después de `ACQUISITION_INTERVAL_S`:
 
 ```python
-# MQTT
-MQTT_BROKER_HOST: str  = os.getenv('MQTT_BROKER_HOST', '10.0.0.2')
+# MQTT — MQTT_BROKER_HOST intencionalmente vacío: la subred enlace no está confirmada (PENDIENTE P5)
+# Configurar en .env antes de arrancar. validate() falla si está vacío.
+MQTT_BROKER_HOST: str  = os.getenv('MQTT_BROKER_HOST', '')
 MQTT_BROKER_PORT: int  = int(os.getenv('MQTT_BROKER_PORT', '1883'))
 MQTT_TOPIC: str        = os.getenv('MQTT_TOPIC', 'alumbrado/estado')
 MQTT_CLIENT_ID: str    = os.getenv('MQTT_CLIENT_ID', 'alumbrado-publisher')
 HEARTBEAT_INTERVAL_S: float = float(os.getenv('HEARTBEAT_INTERVAL_S', '300.0'))
+
+# FastAPI — default 127.0.0.1 para no exponer en todas las interfaces sin configuración explícita
+API_HOST: str = os.getenv('API_HOST', '127.0.0.1')
+API_PORT: int = int(os.getenv('API_PORT', '8000'))
 ```
 
 Cambiar el default de `ACQUISITION_INTERVAL_S` de `'30.0'` a `'10.0'`:
@@ -90,9 +113,11 @@ if not (1 <= cls.MQTT_BROKER_PORT <= 65535):
 if cls.HEARTBEAT_INTERVAL_S <= 0:
     raise ValueError(f"HEARTBEAT_INTERVAL_S debe ser positivo: {cls.HEARTBEAT_INTERVAL_S}")
 if not cls.MQTT_BROKER_HOST.strip():
-    raise ValueError("MQTT_BROKER_HOST no puede estar vacio")
+    raise ValueError("MQTT_BROKER_HOST no puede estar vacio — configurar en .env")
 if not cls.MQTT_TOPIC.strip():
     raise ValueError("MQTT_TOPIC no puede estar vacio")
+if not (1 <= cls.API_PORT <= 65535):
+    raise ValueError(f"API_PORT fuera de rango: {cls.API_PORT}")
 ```
 
 - [ ] **Step 4: Verificar que todos los tests de settings pasan**
@@ -694,6 +719,45 @@ class TestRunPublisher:
         assert mock_mqtt.publish.call_count == 1
         published_payload = json.loads(mock_mqtt.publish.call_args[0][1])
         assert published_payload['fins_ok'] is False
+
+    def test_publish_failure_does_not_update_last_payload(self):
+        """Si wait_for_publish falla, last_payload no se actualiza y se reintenta en el siguiente ciclo."""
+        call_count = [0]
+
+        def fake_sleep(s):
+            call_count[0] += 1
+            if call_count[0] >= 2:
+                raise KeyboardInterrupt
+
+        mock_msg_info = Mock()
+        mock_msg_info.rc = 4  # MQTT_ERR_NO_CONN — entrega fallida
+        mock_msg_info.wait_for_publish = Mock()  # no lanza, pero rc != 0
+
+        mock_mqtt = Mock()
+        mock_mqtt.publish.return_value = mock_msg_info
+        mock_fins = Mock()
+        mock_fins.__enter__ = Mock(return_value=mock_fins)
+        mock_fins.__exit__ = Mock(return_value=False)
+
+        same_vars = {
+            'secciones': [{'id': i+1, 'automatico': False, 'manual': False, 'horario_activo': False} for i in range(112)],
+            'modfunalu': 0, 'fotocelula_entrada': False, 'fotocelula_mem_fun': False,
+            'fotocelula_mem_act': False, 'plc_seg': 0, 'plc_min': 0, 'plc_hora': 0,
+            'plc_dia': 1, 'plc_mes': 1, 'plc_anio': 2026, 'plc_diasem': 1,
+            'horarios_raw': [0]*28, 'cycle_time_error': False,
+            'low_battery': False, 'io_verify_error': False,
+        }
+
+        with patch('acquisition.publisher.mqtt.Client', return_value=mock_mqtt), \
+             patch('acquisition.publisher.FINSClient', return_value=mock_fins), \
+             patch('acquisition.publisher.read_all_variables', return_value=same_vars), \
+             patch('acquisition.publisher.time.sleep', fake_sleep), \
+             patch('acquisition.publisher.time.monotonic', return_value=0.0):
+            with pytest.raises(KeyboardInterrupt):
+                run_publisher()
+
+        # Ambos ciclos publican porque rc!=0 impidió actualizar last_payload
+        assert mock_mqtt.publish.call_count == 2
 ```
 
 - [ ] **Step 2: Verificar que los tests fallan**
@@ -757,14 +821,21 @@ def run_publisher() -> None:
             )
 
             if should_publish:
-                mqtt_client.publish(
+                msg_info = mqtt_client.publish(
                     Config.MQTT_TOPIC,
                     json.dumps(payload),
                     qos=1,
                 )
-                last_payload = payload
-                last_publish_time = time.monotonic()
-                logger.info("MQTT publicado — fins_ok=%s", payload['fins_ok'])
+                try:
+                    msg_info.wait_for_publish(timeout=5.0)
+                    if msg_info.rc != 0:
+                        logger.warning("MQTT publish error: rc=%d", msg_info.rc)
+                    else:
+                        last_payload = payload
+                        last_publish_time = time.monotonic()
+                        logger.info("MQTT publicado — fins_ok=%s", payload['fins_ok'])
+                except (ValueError, RuntimeError) as exc:
+                    logger.warning("MQTT wait_for_publish error: %s", exc)
 
             time.sleep(Config.ACQUISITION_INTERVAL_S)
 ```
