@@ -8,10 +8,26 @@ Sistema read-only de supervisión de alumbrado industrial en nave TVITEC.
 
 **Hardware:**
 - PLC: Omron CJ2M CPU32, IP 192.168.250.1, FINS node 1
-- RPi: Ubuntu 24.04 LTS aarch64, eth0 192.168.250.56 (FINS node 56)
-- Red servicio RPi: wlan0 (hotspot móvil, primario) + eth1 USB adapter 10.10.10.1/30 (fallback laptop)
-- DMZ (Fase 2): equipo Windows 10, eth1 del RPi pasará a conectar aquí
+- Nodo OT: RPi, Ubuntu 24.04 LTS aarch64, eth0 192.168.250.56 (FINS node 56)
+- Nodo IT (Fase 2): Lenovo S500, Intel i3, Windows 10 — asignado por informática 2026-05-11
 - Usuarios RPi: master (admin/sudo), gwsvc (servicio, sin sudo)
+
+**Infraestructura física (confirmada 2026-05-11):**
+- Cable ethernet ~40m desde cuadro eléctrico (PLC) hasta puesto de producción
+- Conectividad verificada: ping 192.168.250.1 OK desde laptop en 192.168.250.55
+- Enlace RPi↔Lenovo: adaptador USB-Eth en RPi (eth1) → cable RJ45 → NIC1 del Lenovo
+
+**Arquitectura de red (confirmada 2026-05-11):**
+- RPi eth0: red OT (192.168.250.x) — habla FINS con el PLC
+- RPi eth1 (USB-Eth): subred de enlace hacia el Lenovo (ej. 10.0.0.1/30, pendiente confirmar)
+- Lenovo NIC1: subred de enlace con RPi (10.0.0.2/30)
+- Lenovo NIC2: ethernet de fábrica / red corporativa
+
+**Principio de seguridad IT/OT (normativa, confirmado 2026-05-11):**
+- Comunicación estrictamente unidireccional OT→IT: RPi solo publica, nunca recibe del Lenovo
+- El Lenovo nunca inicia conexión hacia la RPi ni hacia la red OT
+- Sin dual-homed systems: el Lenovo no tiene visibilidad de 192.168.250.0/24
+- Protocolo de publicación: MQTT — broker Mosquitto en Lenovo, RPi es publisher only
 
 **Why:** Read-only. El PLC nunca debe cambiar de modo RUN. NOT_RUN es alarma operacional crítica.
 
@@ -32,8 +48,8 @@ Sistema read-only de supervisión de alumbrado industrial en nave TVITEC.
 - Valores llegan como enteros planos (no BCD)
 
 **Stack por fases:**
-- Fase 1 (RPi, Linux): Python 3.x, SQLAlchemy 2.0 + SQLite, Alembic, FastAPI, uvicorn
-- Fase 2 (DMZ, Windows 10): mismo stack, SQL Server Express (gratuito) en lugar de SQLite
+- Fase 1 (RPi, Linux): Python 3.x, SQLAlchemy 2.0 + SQLite, Alembic, FastAPI, uvicorn — todo en RPi
+- Fase 2 (Lenovo, Windows 10): RPi solo corre FINS reader + paho-mqtt publisher (ligero, sin BD ni API); Lenovo corre subscriber MQTT + SQL Server Express + FastAPI
 - Migración: solo cambia connection string en .env + alembic upgrade head
 
 **How to apply:** Antes de proponer cualquier decisión de modelo de datos o motor de BD, verificar que es compatible con SQLite Y SQL Server (sin queries específicas de un motor).
