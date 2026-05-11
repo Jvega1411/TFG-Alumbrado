@@ -126,6 +126,38 @@ class TestParsePayload:
         }
         with pytest.raises(ValueError, match="duplicados"):
             parse_payload(json.dumps(data).encode("utf-8"))
+
+    def test_extra_field_rejected(self):
+        import json
+        secciones = [{"id": i+1, "automatico": False, "manual": False, "horario_activo": False} for i in range(112)]
+        data = {
+            "ts": "2026-05-12T08:30:00+00:00", "fins_ok": True, "fins_error": None,
+            "plc_reloj": {"seg": 0, "min": 0, "hora": 0, "dia": 1, "mes": 1, "anio": 2026, "diasem": 1},
+            "modo": {"modfunalu": 0, "fotocelula_entrada": False, "fotocelula_mem_fun": False, "fotocelula_mem_act": False},
+            "secciones": secciones,
+            "horarios": {"raw_words": [0] * 28},
+            "diagnostico": {"cycle_time_error": False, "low_battery": False, "io_verify_error": False},
+            "campo_extra_inesperado": "valor",  # extra="forbid" debe rechazar esto
+        }
+        with pytest.raises(ValueError):
+            parse_payload(json.dumps(data).encode("utf-8"))
+
+    def test_string_coercion_rejected_for_bool(self):
+        """StrictBool rechaza "true" (string) — solo acepta literal True/False de JSON."""
+        import json
+        secciones = [{"id": i+1, "automatico": False, "manual": False, "horario_activo": False} for i in range(112)]
+        data = {
+            "ts": "2026-05-12T08:30:00+00:00",
+            "fins_ok": "true",  # string en vez de bool — StrictBool debe rechazar
+            "fins_error": None,
+            "plc_reloj": {"seg": 0, "min": 0, "hora": 0, "dia": 1, "mes": 1, "anio": 2026, "diasem": 1},
+            "modo": {"modfunalu": 0, "fotocelula_entrada": False, "fotocelula_mem_fun": False, "fotocelula_mem_act": False},
+            "secciones": secciones,
+            "horarios": {"raw_words": [0] * 28},
+            "diagnostico": {"cycle_time_error": False, "low_battery": False, "io_verify_error": False},
+        }
+        with pytest.raises(ValueError):
+            parse_payload(json.dumps(data).encode("utf-8"))
 ```
 
 - [ ] **Step 3: Verificar que los tests fallan**
@@ -145,50 +177,63 @@ import json
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
 
 
 class SeccionPayload(BaseModel):
-    id: int
-    automatico: bool
-    manual: bool
-    horario_activo: bool
+    model_config = ConfigDict(extra="forbid")
+
+    id: StrictInt
+    automatico: StrictBool
+    manual: StrictBool
+    horario_activo: StrictBool
 
 
 class RelojPayload(BaseModel):
-    seg: int
-    min: int
-    hora: int
-    dia: int
-    mes: int
-    anio: int
-    diasem: int
+    model_config = ConfigDict(extra="forbid")
+
+    seg: StrictInt
+    min: StrictInt
+    hora: StrictInt
+    dia: StrictInt
+    mes: StrictInt
+    anio: StrictInt
+    diasem: StrictInt
 
 
 class ModoPayload(BaseModel):
-    modfunalu: int
-    fotocelula_entrada: bool
-    fotocelula_mem_fun: bool
-    fotocelula_mem_act: bool
+    model_config = ConfigDict(extra="forbid")
+
+    modfunalu: StrictInt
+    fotocelula_entrada: StrictBool
+    fotocelula_mem_fun: StrictBool
+    fotocelula_mem_act: StrictBool
 
 
 class HorariosPayload(BaseModel):
-    raw_words: List[int]
+    model_config = ConfigDict(extra="forbid")
+
+    # ⚠️ PENDIENTE P1: longitud esperada (28) y rango semántico se confirmarán con smoke test
+    raw_words: List[StrictInt] = Field(default_factory=list)
 
 
 class DiagnosticoPayload(BaseModel):
-    cycle_time_error: bool
-    low_battery: bool
-    io_verify_error: bool
+    model_config = ConfigDict(extra="forbid")
+
+    cycle_time_error: StrictBool
+    low_battery: StrictBool
+    io_verify_error: StrictBool
 
 
 class MQTTPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     ts: datetime
-    fins_ok: bool
+    fins_ok: StrictBool
     fins_error: Optional[str] = None
     plc_reloj: Optional[RelojPayload] = None
     modo: Optional[ModoPayload] = None
-    secciones: List[SeccionPayload] = []
+    secciones: List[SeccionPayload] = Field(default_factory=list)
     horarios: Optional[HorariosPayload] = None
     diagnostico: Optional[DiagnosticoPayload] = None
 
@@ -639,13 +684,19 @@ from subscriber.listener import run_subscriber
 
 
 class TestRunSubscriber:
+    """
+    Todos los tests parchean Config.validate_subscriber para evitar que falle
+    por MQTT_BROKER_HOST vacío (default en tests). El comportamiento de validate_subscriber
+    está cubierto por tests/test_settings.py.
+    """
 
     def test_connects_to_configured_broker(self):
         mock_client = MagicMock()
 
-        with patch("subscriber.listener.mqtt.Client", return_value=mock_client), \
+        with patch("subscriber.listener.Config.validate_subscriber"), \
+             patch("subscriber.listener.mqtt.Client", return_value=mock_client), \
              patch("subscriber.listener.create_db_engine"), \
-             patch("subscriber.listener.Base.metadata.create_all"), \
+             patch("subscriber.listener.Config.DB_AUTO_CREATE", False), \
              patch.object(mock_client, "loop_forever", side_effect=KeyboardInterrupt):
             try:
                 run_subscriber()
@@ -660,9 +711,10 @@ class TestRunSubscriber:
     def test_subscribes_to_configured_topic(self):
         mock_client = MagicMock()
 
-        with patch("subscriber.listener.mqtt.Client", return_value=mock_client), \
+        with patch("subscriber.listener.Config.validate_subscriber"), \
+             patch("subscriber.listener.mqtt.Client", return_value=mock_client), \
              patch("subscriber.listener.create_db_engine"), \
-             patch("subscriber.listener.Base.metadata.create_all"), \
+             patch("subscriber.listener.Config.DB_AUTO_CREATE", False), \
              patch.object(mock_client, "loop_forever", side_effect=KeyboardInterrupt):
             try:
                 run_subscriber()
@@ -682,9 +734,10 @@ class TestRunSubscriber:
 
         mock_client.loop_forever = fake_loop
 
-        with patch("subscriber.listener.mqtt.Client", return_value=mock_client), \
+        with patch("subscriber.listener.Config.validate_subscriber"), \
+             patch("subscriber.listener.mqtt.Client", return_value=mock_client), \
              patch("subscriber.listener.create_db_engine"), \
-             patch("subscriber.listener.Base.metadata.create_all"):
+             patch("subscriber.listener.Config.DB_AUTO_CREATE", False):
             try:
                 run_subscriber()
             except KeyboardInterrupt:
@@ -713,8 +766,12 @@ from model.database import Base, create_db_engine
 
 
 def run_subscriber() -> None:
+    Config.validate_subscriber()
+
     engine = create_db_engine(Config.DB_URL)
-    Base.metadata.create_all(engine)
+    # DB_AUTO_CREATE=true solo para desarrollo/primera vez — en producción usar alembic upgrade head
+    if Config.DB_AUTO_CREATE:
+        Base.metadata.create_all(engine)
 
     def on_message(client, userdata, message):
         with Session(engine) as session:

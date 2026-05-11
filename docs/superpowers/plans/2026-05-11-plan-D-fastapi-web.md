@@ -317,14 +317,28 @@ def populated_engine(test_engine):
     return test_engine
 
 
-@pytest.fixture
-def api_client(populated_engine, monkeypatch):
-    """TestClient con engine inyectado via monkeypatch."""
-    import api.routes as routes_module
-    monkeypatch.setattr(routes_module, "engine", populated_engine)
-
+def _make_client(engine):
+    """Helper: inyecta engine y devuelve TestClient. Usar init_engine, NO monkeypatch."""
+    from api.routes import init_engine
+    init_engine(engine)
     from main import app
     return TestClient(app)
+
+
+@pytest.fixture
+def api_client(populated_engine):
+    """TestClient con engine inyectado vía init_engine."""
+    return _make_client(populated_engine)
+
+
+class TestGetDB:
+
+    def test_get_db_raises_if_engine_not_initialized(self):
+        """get_db() debe fallar explícitamente si se llama sin init_engine previo."""
+        from api.routes import init_engine, get_db
+        init_engine(None)  # resetear a None
+        with pytest.raises(RuntimeError, match="init_engine"):
+            next(get_db())
 
 
 class TestGetEstado:
@@ -334,18 +348,15 @@ class TestGetEstado:
         assert resp.status_code == 200
 
     def test_returns_fins_ok_true(self, api_client):
-        data = resp = api_client.get("/api/estado").json()
+        data = api_client.get("/api/estado").json()
         assert data["fins_ok"] is True
 
     def test_returns_modfunalu(self, api_client):
         data = api_client.get("/api/estado").json()
         assert data["modfunalu"] == 0
 
-    def test_returns_404_when_empty(self, test_engine, monkeypatch):
-        import api.routes as routes_module
-        monkeypatch.setattr(routes_module, "engine", test_engine)
-        from main import app
-        client = TestClient(app)
+    def test_returns_404_when_empty(self, test_engine):
+        client = _make_client(test_engine)
         resp = client.get("/api/estado")
         assert resp.status_code == 404
 
@@ -370,11 +381,8 @@ class TestGetSeccionesActual:
         ids = [s["seccion_id"] for s in data]
         assert ids == list(range(1, 113))
 
-    def test_returns_404_when_empty(self, test_engine, monkeypatch):
-        import api.routes as routes_module
-        monkeypatch.setattr(routes_module, "engine", test_engine)
-        from main import app
-        client = TestClient(app)
+    def test_returns_404_when_empty(self, test_engine):
+        client = _make_client(test_engine)
         resp = client.get("/api/secciones/actual")
         assert resp.status_code == 404
 
@@ -480,6 +488,8 @@ def init_engine(engine) -> None:
 
 
 def get_db():
+    if _engine is None:
+        raise RuntimeError("Engine no inicializado — llamar init_engine() antes de usar el router")
     with Session(_engine) as session:
         yield session
 
@@ -664,7 +674,9 @@ from config.settings import Config
 from model.database import Base, create_db_engine
 
 _engine = create_db_engine(Config.DB_URL)
-Base.metadata.create_all(_engine)  # crea tablas si no existen — solo desarrollo/primera vez
+# DB_AUTO_CREATE=true solo para desarrollo/primera vez — en producción usar `alembic upgrade head`
+if Config.DB_AUTO_CREATE:
+    Base.metadata.create_all(_engine)
 init_engine(_engine)
 
 app = FastAPI(title="Alumbrado Gateway")

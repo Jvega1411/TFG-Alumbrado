@@ -41,12 +41,20 @@ def test_mqtt_broker_host_default_is_empty(self):
     # MQTT_BROKER_HOST debe configurarse explícitamente en .env; arrancar sin él falla validate()
     assert Config.MQTT_BROKER_HOST == ''
 
-def test_mqtt_broker_host_validate_fails_if_empty(self):
+def test_validate_publisher_fails_if_mqtt_broker_host_empty(self):
     original = Config.MQTT_BROKER_HOST
     try:
         Config.MQTT_BROKER_HOST = ''
         with pytest.raises(ValueError, match="MQTT_BROKER_HOST"):
-            Config.validate()
+            Config.validate_publisher()
+    finally:
+        Config.MQTT_BROKER_HOST = original
+
+def test_validate_api_passes_without_mqtt_broker_host(self):
+    original = Config.MQTT_BROKER_HOST
+    try:
+        Config.MQTT_BROKER_HOST = ''
+        Config.validate_api()  # no debe lanzar aunque MQTT_BROKER_HOST esté vacío
     finally:
         Config.MQTT_BROKER_HOST = original
 
@@ -71,6 +79,10 @@ def test_api_host_default_is_localhost(self):
 
 def test_api_port_default(self):
     assert Config.API_PORT == 8000
+
+def test_db_auto_create_default_is_false(self):
+    # False por defecto: producción usa alembic upgrade head, no create_all automático
+    assert Config.DB_AUTO_CREATE is False
 ```
 
 - [ ] **Step 2: Verificar que los tests fallan**
@@ -97,6 +109,9 @@ HEARTBEAT_INTERVAL_S: float = float(os.getenv('HEARTBEAT_INTERVAL_S', '300.0'))
 # FastAPI — default 127.0.0.1 para no exponer en todas las interfaces sin configuración explícita
 API_HOST: str = os.getenv('API_HOST', '127.0.0.1')
 API_PORT: int = int(os.getenv('API_PORT', '8000'))
+
+# BD — False en producción: usar `alembic upgrade head` en vez de create_all automático
+DB_AUTO_CREATE: bool = os.getenv('DB_AUTO_CREATE', 'false').lower() == 'true'
 ```
 
 Cambiar el default de `ACQUISITION_INTERVAL_S` de `'30.0'` a `'10.0'`:
@@ -105,19 +120,37 @@ Cambiar el default de `ACQUISITION_INTERVAL_S` de `'30.0'` a `'10.0'`:
 ACQUISITION_INTERVAL_S: float = float(os.getenv('ACQUISITION_INTERVAL_S', '10.0'))
 ```
 
-Añadir al final de `validate()`:
+**NO modificar `validate()` existente.** Añadir tres classmethods nuevos después del `validate()` existente. Cada proceso llama al método de su rol antes de arrancar:
 
 ```python
-if not (1 <= cls.MQTT_BROKER_PORT <= 65535):
-    raise ValueError(f"MQTT_BROKER_PORT fuera de rango: {cls.MQTT_BROKER_PORT}")
-if cls.HEARTBEAT_INTERVAL_S <= 0:
-    raise ValueError(f"HEARTBEAT_INTERVAL_S debe ser positivo: {cls.HEARTBEAT_INTERVAL_S}")
-if not cls.MQTT_BROKER_HOST.strip():
-    raise ValueError("MQTT_BROKER_HOST no puede estar vacio — configurar en .env")
-if not cls.MQTT_TOPIC.strip():
-    raise ValueError("MQTT_TOPIC no puede estar vacio")
-if not (1 <= cls.API_PORT <= 65535):
-    raise ValueError(f"API_PORT fuera de rango: {cls.API_PORT}")
+@classmethod
+def validate_api(cls) -> None:
+    """Validación para el proceso FastAPI (nodo IT). No requiere MQTT."""
+    cls.validate()  # validaciones comunes (PLC, DB, etc.)
+    if not (1 <= cls.API_PORT <= 65535):
+        raise ValueError(f"API_PORT fuera de rango: {cls.API_PORT}")
+    if not cls.DB_URL.strip():
+        raise ValueError("DB_URL no puede estar vacia")
+
+@classmethod
+def validate_publisher(cls) -> None:
+    """Validación para el proceso FINS publisher (nodo OT). Requiere MQTT configurado."""
+    cls.validate()
+    if not cls.MQTT_BROKER_HOST.strip():
+        raise ValueError("MQTT_BROKER_HOST no puede estar vacio — configurar en .env")
+    if not (1 <= cls.MQTT_BROKER_PORT <= 65535):
+        raise ValueError(f"MQTT_BROKER_PORT fuera de rango: {cls.MQTT_BROKER_PORT}")
+    if not cls.MQTT_TOPIC.strip():
+        raise ValueError("MQTT_TOPIC no puede estar vacio")
+    if cls.HEARTBEAT_INTERVAL_S <= 0:
+        raise ValueError(f"HEARTBEAT_INTERVAL_S debe ser positivo: {cls.HEARTBEAT_INTERVAL_S}")
+
+@classmethod
+def validate_subscriber(cls) -> None:
+    """Validación para el proceso MQTT subscriber (nodo IT). Requiere MQTT + DB."""
+    cls.validate_publisher()  # subscriber también necesita MQTT
+    if not cls.DB_URL.strip():
+        raise ValueError("DB_URL no puede estar vacia")
 ```
 
 - [ ] **Step 4: Verificar que todos los tests de settings pasan**
@@ -777,6 +810,7 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
+from typing import Optional
 
 import paho.mqtt.client as mqtt
 
@@ -796,11 +830,13 @@ def _payloads_equal(a: dict, b: dict) -> bool:
 
 
 def run_publisher() -> None:
+    Config.validate_publisher()
+
     mqtt_client = mqtt.Client(client_id=Config.MQTT_CLIENT_ID)
     mqtt_client.connect(Config.MQTT_BROKER_HOST, Config.MQTT_BROKER_PORT, keepalive=60)
     mqtt_client.loop_start()
 
-    last_payload: dict | None = None
+    last_payload: Optional[dict] = None
     last_publish_time: float = 0.0
 
     with FINSClient() as fins:
@@ -828,12 +864,13 @@ def run_publisher() -> None:
                 )
                 try:
                     msg_info.wait_for_publish(timeout=5.0)
-                    if msg_info.rc != 0:
-                        logger.warning("MQTT publish error: rc=%d", msg_info.rc)
-                    else:
+                    if msg_info.rc == mqtt.MQTT_ERR_SUCCESS and msg_info.is_published():
                         last_payload = payload
                         last_publish_time = time.monotonic()
                         logger.info("MQTT publicado — fins_ok=%s", payload['fins_ok'])
+                    else:
+                        logger.warning("MQTT publish no confirmado: rc=%d is_published=%s",
+                                       msg_info.rc, msg_info.is_published())
                 except (ValueError, RuntimeError) as exc:
                     logger.warning("MQTT wait_for_publish error: %s", exc)
 
