@@ -7,22 +7,62 @@ Lee estados desde un PLC Omron Sysmac CJ2M CPU32 mediante FINS/UDP y persiste da
 
 No es sistema de mando. No debe modificar el PLC ni la instalación.
 
-## Knowledge Base - Vault Obsidian
+## Knowledge Base — Vault Obsidian
 
-El vault de conocimiento del proyecto vive en un repositorio separado: `TFG-Alumbrado-vault`.
+El vault de conocimiento del proyecto vive en un repositorio git separado: `TFG-Alumbrado-vault`.
+Ruta en esta máquina: ver `LOCAL_PATHS.md` en la raíz del vault (fichero local, no commiteado).
 
-Para agentes: leer `AGENTS.md` en la raiz del vault al inicio de sesiones que requieran contexto historico, decisiones previas o continuidad entre Claude Code y Codex.
+### Protocolo de sesión — obligatorio en cada sesión
 
-El vault contiene:
-- Nota diaria con decisiones y findings de cada sesion (`10_Daily/`)
-- Variables PLC validadas y pendientes (`30_PLC/`)
-- Arquitectura y contratos (`40_Architecture/`)
-- Conceptos tecnicos explicados para Sebas (`60_Concepts/`)
-- Mapa de codigo generado por Graphify (`graph/GRAPH_REPORT.md`)
+1. Leer `AGENTS.md` en la raíz del vault. **Siempre. Sin excepciones.**
+2. Leer `10_Daily/YYYY-MM-DD.md` de hoy completo. Si no existe, crearlo desde la plantilla en `AGENTS.md`.
+3. Leer `00_Index/Pending Questions.md` antes de empezar cualquier trabajo.
+4. Leer `graph/GRAPH_REPORT.md` si se necesita contexto de estructura de código.
+5. Trabajar en el repo de código.
+6. Añadir bloque de sesión a la nota diaria al terminar.
+7. Actualizar `00_Index/Pending Questions.md` — añadir items, tachar resueltos.
+8. **Commitear el vault solo si hubo trabajo real** (decisiones, razonamiento, aprendizaje, revisión de planes — aunque no haya código). Sesiones de lectura trivial sin trabajo: no commitear. Mensaje: `git commit -m "session: YYYY-MM-DD Claude Code"`.
 
-Ruta del vault en esta maquina: ver `LOCAL_PATHS.md` en la raiz del vault.
+### Contrato de escritura
 
-Graphify no debe modificar este fichero ni `AGENTS.md` automaticamente.
+- **Formato decisiones: What / Why / Where.** Where = ruta exacta de fichero + línea en `TFG-Alumbrado`.
+- **Tono educativo.** Sebas es estudiante. Explicar decisiones técnicas en lenguaje llano.
+- **Enlazar conceptos.** Primera aparición de un término técnico → `[[60_Concepts/NombreConcepto]]`. Crear el fichero si no existe.
+- **Snippets comentados para el "por qué"**, no para el "qué". Escritos para Sebas, no para el compilador.
+
+### Regla newer-prevails
+
+Si dos notas se contradicen, gana la de fecha más reciente.
+
+**Excepción — estas fuentes siempre ganan sobre cualquier nota:**
+- `Tabla_ES.html` — mapa de variables PLC (verdad de dirección y nombre)
+- `LD_Ilum.pdf` — diagrama ladder (verdad de comportamiento)
+- Capturas smoke en `data/smoke_fins/` — **solo para valores observados** (e.g. "W25=1 fue leído"). La interpretación semántica (e.g. "W25=1 significa que la fotocélula está activa") sigue requiriendo `LD_Ilum.pdf` o decisión explícita de Sebas.
+- Decisión explícita de Sebas (marcada "Decisión Sebas" en la nota)
+
+### Contenido del vault
+
+| Carpeta | Propósito |
+|---|---|
+| `00_Index/` | Project Map (estático) + Pending Questions (actualizar cada sesión) |
+| `10_Daily/` | Una nota por día · múltiples sesiones se añaden al mismo fichero |
+| `20_Decisions/` | Decisiones largas que no caben en la nota diaria |
+| `30_PLC/` | Variables validadas, pendientes y curated smoke findings |
+| `40_Architecture/` | Fase 2 overview, MQTT payload, SQLite schema, API contract |
+| `50_AI_Context/` | Reglas compartidas, contexto por agente (Claude y Codex) |
+| `60_Concepts/` | Conceptos técnicos explicados para Sebas — crece orgánicamente |
+| `graph/` | `GRAPH_REPORT.md` (agentes) y `graph.html` (gitignored, Sebas) |
+
+### Qué NO escribir en el vault
+
+- Contenido de `.env`, credenciales, contraseñas, connection strings
+- Ficheros JSON raw de smoke (`data/smoke_fins/*.json` quedan en este repo)
+- Ficheros generados (`__pycache__`, `.db`, `.venv`, `graph.json`)
+
+### Graphify
+
+Graphify indexa ambos repos y genera `graph/GRAPH_REPORT.md` en el vault.
+**No modifica este fichero ni `AGENTS.md` automáticamente.** Cualquier sugerencia va a `graph/AGENT_SUGGESTIONS.md` para revisión manual de Sebas.
 
 ## Contexto técnico
 
