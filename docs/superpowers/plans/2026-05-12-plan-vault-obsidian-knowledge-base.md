@@ -124,9 +124,10 @@ Sebas lo crea en el primer setup. Si no existe, pedirle a Sebas que lo cree.
 4. **Trabajar** en el repo de código.
 5. **Añadir** el bloque de sesión a la nota diaria al terminar (aunque sea breve).
 6. **Actualizar** `00_Index/Pending Questions.md` — añadir nuevos items, tachar los resueltos.
-7. **Commitear el vault solo si fue modificado.**
-   - Si solo se leyó sin cambios: anotar "sin cambios en vault esta sesión" en la nota diaria y no commitear.
-   - Si hubo cambios: `git commit -m "session: YYYY-MM-DD <AgentName>"`
+7. **Commitear el vault solo si hubo trabajo real.**
+   - Sesión puramente de lectura sin razonamiento ni decisiones: no escribir, no commitear.
+   - Si hubo razonamiento, decisiones, aprendizaje, revisión o conceptos trabajados (aunque no haya código producido): añadir bloque a la nota diaria y commitear. Esto incluye sesiones de revisión de planes o brainstorming.
+   - Si hubo cambios en el vault: `git commit -m "session: YYYY-MM-DD <AgentName>"`
 
 ---
 
@@ -288,11 +289,11 @@ Create `C:\Users\sebas\TFG-Alumbrado-vault\00_Index\Pending Questions.md`:
 
 ## PLC / Hardware
 
-- [ ] **H10 bit 13 (0x2000):** ¿Es significativo o ruido? Mapea a selcer174, fuera del rango de 172 cerchas. Confirmar con el programador.
+- [ ] **H10.13 (0x2000 = marmansec):** Observado constante en smoke. selcer termina en H10.11=selcer172. H10.12=funautsec, H10.13=marmansec, H10.14=ordtraseccom (posible duplicado documental), H10.15=indactalusec. Confirmar semántica con LD_Ilum.pdf y el programador.
 - [ ] **W25.00 = entfot1:** Confirmado empíricamente (smoke: W25=1) y visible en ladder como I:6.00, pero no aparece en Tabla_ES.html. Confirmar formalmente contra LD_Ilum.pdf.
 - [ ] **horini3–12:** D3632 empieza en horfin3. Los horarios de inicio de tramos 3-12 deben estar entre D1008 y D3631. No leídos aún.
-- [ ] **D116 (modfunalu):** No leído en smoke test. Leer en la próxima sesión con acceso al PLC.
-- [ ] **W4-W14 (salidas cerchas):** ¿Cubre 160 o 172 señales? Tabla_ES confirma W4.00 y bloque BOOL[160]. Confirmar con programador.
+- [ ] **D116 (modfunalu):** Validado en Tabla_ES.html. No leído en smoke test. Leer en la próxima sesión con acceso al PLC.
+- [ ] **W4-W14 (salidas cerchas):** Tabla_ES valida W4.00–W11.13 = saldigcer1..126. Smoke ha leído W4–W14. W11.14–W14.15 presentes en lecturas pero sin confirmación en tabla. Confirmar cobertura completa con programador.
 
 ## Arquitectura / Infraestructura
 
@@ -358,7 +359,7 @@ Create `C:\Users\sebas\TFG-Alumbrado-vault\10_Daily\2026-05-12.md`:
 
 ### Findings
 - PLC clock ~5 min detrás de UTC+2, no 1 hora. Confirmado en 4 capturas. Deriva fija, sin NTP.
-- H10 = 0x2000 (bit 13) → selcer174, fuera del rango de 172 cerchas. ⚠️ Pendiente confirmación con programador.
+- H10 = 0x2000 (bit 13 = H10.13 = marmansec). selcer termina en H10.11=selcer172. H10.12=funautsec, H10.13=marmansec, H10.14=ordtraseccom, H10.15=indactalusec. ⚠️ Semántica pendiente de confirmar contra LD_Ilum.pdf.
 - DM clock = enteros planos. AR clock = pares BCD (e.g. 0x3109 = min 31, seg 09). Ambos confirmados empíricamente.
 - Tiempo de ciclo ~15-16ms (A264=15, A265=0). Intervalo de adquisición de 10s es muy seguro.
 - W25=1, H100=0x0002 (memactfotalu=1): fotocélula activa durante el smoke test.
@@ -426,7 +427,7 @@ Create `C:\Users\sebas\TFG-Alumbrado-vault\30_PLC\Variables Validated.md`:
 | H100.00 | memfunfotalu | Memoria función fotocélula | Tabla_ES.html |
 | H100.01 | memactfotalu | Memoria activación fotocélula | Tabla_ES.html |
 
-**Nota H10:** Los bits H10.12–H10.15 no pertenecen a selección de cerchas (según nota en smoke test). H10.13 (0x2000) aparece activo — pendiente confirmación con programador.
+**Nota H10:** selcer termina en H10.11 (selcer172). H10.12=funautsec, H10.13=marmansec, H10.14=ordtraseccom (posible duplicado documental), H10.15=indactalusec. H10.13 (0x2000) aparece activo en smoke → marmansec=True observado. Confirmar semántica contra LD_Ilum.pdf.
 
 ## Área DM (Data Memory)
 
@@ -535,9 +536,14 @@ Total: 5 capturas · 0 errores FINS · Comunicación 100% estable.
 ### Tiempo de ciclo
 - A264=15 ms, A265=0 → tiempo de ciclo ~15-16ms. El intervalo de adquisición de 10s es 625× el tiempo de ciclo.
 
-### Selección cerchas
-- H0–H9: todos 0x0000 (ninguna cercha seleccionada en secciones 1–160)
-- H10=0x2000 (bit 13) constante en todas las capturas → ⚠️ Anomalía: mapea a selcer174, fuera del rango de 172 cerchas. Pendiente confirmación con programador.
+### Selección cerchas y H10
+- H0–H9: todos 0x0000 (ninguna cercha seleccionada, selcer1..160)
+- H10=0x2000 (bit 13 = H10.13) constante en todas las capturas. selcer termina en H10.11=selcer172. H10.13 = marmansec → marmansec=True observado. ⚠️ Semántica pendiente de confirmar contra LD_Ilum.pdf.
+
+### Salidas cerchas (WR)
+- Leído por smoke: W4–W14
+- Validado por Tabla_ES: W4.00–W11.13 = saldigcer1..126
+- No validado: W11.14–W14.15 (presentes en lecturas, sin confirmación en tabla)
 
 ### Horarios tramos
 - Tramo 1: ini=00:00, fin=09:00
@@ -637,6 +643,7 @@ Create `C:\Users\sebas\TFG-Alumbrado-vault\40_Architecture\MQTT Payload.md`:
     "fotocelula_mem_fun": false,
     "fotocelula_mem_act": true
   },
+  // NOTA: modfunalu=0 es valor spec/ejemplo — D116 no fue leído en smoke test.
   "secciones": [
     { "id": 1, "automatico": false, "manual": false, "horario_activo": false },
     ...
@@ -686,7 +693,7 @@ Registro de cada ciclo de adquisición. Una fila por publicación MQTT procesada
 | Columna | Tipo | Descripción |
 |---|---|---|
 | id | INTEGER PK AUTOINCREMENT | |
-| ts | DATETIME NOT NULL | Timestamp del ciclo (UTC) |
+| timestamp | DATETIME NOT NULL | Timestamp del ciclo (UTC) |
 | fins_ok | BOOLEAN NOT NULL | True si la lectura FINS fue exitosa |
 | fins_error | TEXT | Mensaje de error si fins_ok=False |
 | plc_seg | INTEGER | Segundos del reloj PLC |
@@ -703,14 +710,18 @@ Registro de cada ciclo de adquisición. Una fila por publicación MQTT procesada
 | low_battery | BOOLEAN | A402.04 |
 | io_verify_error | BOOLEAN | A402.09 |
 
+Constraint: `uq_ciclo_timestamp` UNIQUE (timestamp)
+
 ## Tabla: seccion_estado
 
 Estado de cada sección por ciclo. 112 filas por ciclo con fins_ok=True.
+`timestamp` se desnormaliza desde `ciclo` para evitar joins en consultas frecuentes.
 
 | Columna | Tipo | Descripción |
 |---|---|---|
 | id | INTEGER PK AUTOINCREMENT | |
 | ciclo_id | INTEGER FK → ciclo.id | |
+| timestamp | DATETIME NOT NULL | Copia desnormalizada de ciclo.timestamp |
 | seccion_id | INTEGER NOT NULL | 1–112 |
 | automatico | BOOLEAN NOT NULL | H11–H17 |
 | manual | BOOLEAN NOT NULL | H18–H24 |
@@ -719,12 +730,13 @@ Estado de cada sección por ciclo. 112 filas por ciclo con fins_ok=True.
 ## Tabla: horario_tramo
 
 Raw words de horarios. Una fila por ciclo con fins_ok=True.
+> ⚠️ Forma definitiva pendiente de spec completa. Por ahora: almacenamiento raw como placeholder.
 
 | Columna | Tipo | Descripción |
 |---|---|---|
 | id | INTEGER PK AUTOINCREMENT | |
 | ciclo_id | INTEGER FK → ciclo.id | |
-| raw_words | TEXT NOT NULL | JSON array de 28 integers (D1000–D1007 + D3632–D3651) |
+| raw_words | TEXT NOT NULL | JSON array de integers (D1000–D1007 + D3632–D3651) — forma definitiva TBD |
 ```
 
 - [ ] **Step 4: Create API Contract.md**
@@ -739,24 +751,23 @@ Create `C:\Users\sebas\TFG-Alumbrado-vault\40_Architecture\API Contract.md`:
 
 ## Endpoints
 
-### GET /estado/actual
-Estado más reciente del sistema.
-Response: último ciclo con fins_ok=True + sus 112 secciones.
+### GET /
+Bienvenida / health básico.
 
-### GET /estado/historial
-Historial de ciclos. Query params: `desde`, `hasta` (ISO datetime), `limit` (default 100).
+### GET /api/estado
+Estado más reciente del sistema. Response: último ciclo + sus 112 secciones.
 
-### GET /secciones/{seccion_id}/historial
-Historial de estados de una sección concreta. Query params: `desde`, `hasta`.
+### GET /api/secciones/actual
+Estado actual de todas las secciones.
 
-### GET /horarios
+### GET /api/horarios
 Último raw_words de horarios disponible.
 
-### GET /diagnostico
-Último ciclo con cualquier flag de diagnóstico activo (cycle_time_error, low_battery, io_verify_error).
+### GET /api/historial/ciclos
+Historial de ciclos. Query params: `desde`, `hasta` (ISO datetime), `limit` (default 100).
 
-### GET /health
-Diagnóstico de la API: BD accesible, último ciclo recibido hace <Ns.
+### GET /api/historial/secciones
+Historial de estados de secciones. Query params: `desde`, `hasta`, `seccion_id`.
 ```
 
 - [ ] **Step 5: Commit 40_Architecture**
@@ -1102,17 +1113,22 @@ git commit -m "chore: añadir .graphifyignore, actualizar .gitignore y CLAUDE.md
 - Read: Graphify installation docs at `https://graphify.net` (Sebas reviews manually)
 - Create: `TFG-Alumbrado-vault/graph/GRAPH_REPORT.md` (after manual review)
 
-- [ ] **Step 1: Install Graphify**
+- [ ] **Step 1: Consultar docs e instalar Graphify**
 
-Graphify is a Python package. In the code repo's virtual environment:
+Antes de instalar, verificar el nombre exacto del paquete y el comando de instalación recomendado:
+
+1. Consultar la guía oficial en `https://graphify.net` (sección instalación / README).
+2. Ejecutar `graphify --help` si ya hay una versión disponible, para verificar la CLI correcta.
+3. Una vez confirmado el nombre del paquete, instalar en el entorno virtual del repo de código:
 
 ```powershell
 cd C:\Users\sebas\TFG-Alumbrado
 .venv\Scripts\Activate.ps1
+# Sustituir 'graphify' por el nombre correcto del paquete si difiere
 pip install graphify
 ```
 
-If the package name differs, check Graphify's official installation guide at `https://graphify.net` before running. Do not install in system Python.
+> ⚠️ No asumir que `pip install graphify` es correcto hasta verificarlo. El nombre del paquete PyPI puede diferir del nombre de la herramienta o la CLI. No instalar en el Python del sistema.
 
 - [ ] **Step 2: Verify Graphify CLI is available**
 
@@ -1174,17 +1190,25 @@ git commit -m "docs: añadir GRAPH_REPORT.md generado por Graphify — revisado 
 - ✅ 10_Daily (today's note seeded with actual session findings)
 - ✅ 20_Decisions (placeholder directory)
 - ✅ 30_PLC (Variables Validated, Pending, Smoke Test Findings — curated, references filenames not raw JSON)
-- ✅ 40_Architecture (Fase 2 Overview, MQTT Payload, SQLite Schema with correct bd_alumbrado.db, API Contract)
+  - ✅ H10.13 = marmansec corregido (no selcer174); selcer termina en H10.11
+  - ✅ W4-W14: solo W4.00–W11.13 declarados validados; W11.14–W14.15 marcados sin confirmar
+  - ✅ D116/modfunalu: validado en Tabla_ES, no leído en smoke — marcado explícitamente
+- ✅ 40_Architecture (Fase 2 Overview, MQTT Payload, SQLite Schema, API Contract)
+  - ✅ API endpoints alineados con spec Fase 2: /, /api/estado, /api/secciones/actual, /api/horarios, /api/historial/ciclos, /api/historial/secciones
+  - ✅ SQLite Schema: columna `timestamp` (no `ts`); `uq_ciclo_timestamp`; `timestamp` desnormalizado en `seccion_estado`; `horario_tramo` marcado como placeholder/raw
+  - ✅ MQTT Payload: modfunalu marcado como spec/example, no como dato confirmado por smoke
 - ✅ 50_AI_Context (Agent Rules, Claude Context, Codex Context)
 - ✅ 60_Concepts (FINS-Protocol, BCD-Encoding — both with code examples for Sebas)
 - ✅ .graphifyignore (all required excludes from Codex review: .env, .venv, .pytest_cache, .superpowers, data/smoke_fins/*.json, *.db, *.sqlite, graph.json, graphify-out)
 - ✅ graph.json gitignored in code repo
 - ✅ CLAUDE.md hand-written pointer (Graphify does not touch it)
-- ✅ Graphify install + first run with manual review gate before commit
+- ✅ Graphify install: verificar nombre de paquete contra docs oficiales antes de instalar
+- ✅ First run with manual review gate before commit
 - ✅ graph.html not committed (gitignored, regenerated on demand)
-- ✅ Commit only if vault modified
+- ✅ Commit solo si hubo trabajo real (no solo lectura trivial)
 - ✅ Smoke capture wins for observed values only (semantic interpretation requires LD/Sebas)
+- ✅ AGENTS.md session protocol: commit si hubo razonamiento/decisiones/aprendizaje, aunque no haya código
 
-**Placeholder scan:** No TBD, TODO, or vague steps detected.
+**Placeholder scan:** `horario_tramo.raw_words` marcado explícitamente como placeholder/TBD — esto es intencional por spec.
 
 **Type consistency:** No shared types or method signatures across tasks — this is a configuration plan, not a code plan. N/A.
