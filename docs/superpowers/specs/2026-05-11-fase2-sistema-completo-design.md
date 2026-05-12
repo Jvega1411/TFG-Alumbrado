@@ -10,6 +10,8 @@
 
 Sistema read-only de supervisión de alumbrado industrial en nave TVITEC. Lee estados de un PLC Omron CJ2M CPU32 mediante FINS/UDP y los publica a través de MQTT hacia un nodo IT donde se persisten y visualizan. El PLC nunca recibe escrituras.
 
+Esta spec de Fase 2 prevalece sobre documentación previa en lo relativo a persistencia: SQLite es la decisión de diseño aprobada para esta fase. No implementar SQL Server en Fase 2 salvo orden explícita posterior.
+
 ### Nodos
 
 | Nodo | Hardware | Red | Rol |
@@ -35,7 +37,7 @@ PLC CJ2M (192.168.250.1)
   acquisition/reader.py   — lee variables PLC
   acquisition/publisher.py — construye payload, detecta cambios, publica MQTT
   │  topic: alumbrado/estado  QoS 1
-  │  subred enlace 10.0.0.x
+  │  subred enlace RPi-Lenovo (PENDIENTE confirmar interfaz y subred)
   ▼
 [Lenovo — nodo IT]
   Mosquitto broker (:1883)
@@ -60,6 +62,36 @@ Cada subsistema se implementa y testea de forma aislada. Se conectan solo al fin
 
 ---
 
+## Subsistema A — FINS smoke test manual (PC)
+
+**Fichero:** `smoke_fins.py`
+
+Objetivo: validar comunicación FINS/UDP read-only desde portátil OT `192.168.250.55` contra PLC `192.168.250.1` y generar un JSON real para orientar la implementación de payload, persistencia y API.
+
+Reglas:
+- Standalone: no requiere `.env`, BD, MQTT ni imports del proyecto.
+- Solo FINS Memory Area Read (`0101`); prohibido añadir escrituras.
+- Bind explícito a `192.168.250.55:9600`.
+- Rechazar cualquier respuesta UDP cuya IP origen no sea `192.168.250.1`.
+- Si falla un rango, continuar con el resto, registrar error en JSON y terminar con exit code `1`.
+- Guardar salida en `data/smoke_fins/fins_smoke_<timestamp>Z.json`; no commitear capturas raw automáticamente.
+- `W25.00 entfot1`: VALIDADO por `LD_Ilum.pdf` (pág. 18, sección `entradas_digitales`, y referencias en págs. 5-6) y observado en smoke (`WR start=25 count=1`, valor `0x0001` en 7/7 capturas). No aparece en `Tabla_ES.html`; esa ausencia fue la causa de la duda documental previa. `W24` queda PENDIENTE separado: no localizado en `Tabla_ES.html`, `LD_Ilum.pdf` ni JSON locales revisados.
+
+Rangos smoke:
+- `HR H0-H10` — selección cerchas `selcer1..172`; usar solo `H0.00..H10.11`, ignorar `H10.12..H10.15` para selección.
+- `HR H11-H31` — secciones: automáticos, manuales, memoria activación.
+- `HR H100` — memorias fotocélula.
+- `WR W25` — entrada fotocélula `entfot1`; `W25.00` validado por `LD_Ilum.pdf` y observado en smoke (`0x0001`).
+- `WR W4-W14` — salidas digitales cerchas raw/exploratorio; `Tabla_ES.html` confirma inicio `W4.00` y bloque `BOOL[160]`, no asumir todavía 172 salidas confirmadas.
+- `DM D500-D506` — reloj PLC.
+- `DM D1000-D1007` — horarios raw tramos 1-2.
+- `DM D3632-D3651` — horarios fin raw tramos 3-12.
+- `AR A351-A353` — reloj AR auxiliar.
+- `AR A264-A265` — tiempo de ciclo actual `P_Cycle_Time_Value` UDINT raw; confirmar orden de palabra antes de convertir.
+- `AR A401-A402` — diagnóstico PLC.
+
+---
+
 ## Subsistema B — FINS reader + MQTT publisher (RPi)
 
 ### Variables PLC a leer
@@ -70,7 +102,7 @@ Cada subsistema se implementa y testea de forma aislada. Se conectan solo al fin
 | H18–H24 | HR | manuales[112] — secciones en manual | 7 words, 112 bits |
 | H25–H31 | HR | memactsec[112] — horario activo por sección | 7 words, 112 bits |
 | D116 | DM | modfunalu — modo global (0=horarios, 1=fotocélula, 2=ambos) | 1 word |
-| W25.bit0 | WR | entfot1 — entrada fotocélula | bit |
+| W25.00 | WR | entfot1 — entrada fotocélula 1; VALIDADO por `LD_Ilum.pdf` y observado en smoke; no aparece en `Tabla_ES.html` | bit |
 | H100.bit0 | HR | memfunfotalu — memoria función fotocélula | bit |
 | H100.bit1 | HR | memactfotalu — memoria activación fotocélula | bit |
 | D500 | DM | plc_seg ⚠️ D500/D505 INTERCAMBIADOS en PDF — usar este mapeo | 1 word |
@@ -97,6 +129,8 @@ Función ya implementada y testeada: `acquisition/poller.py::extract_section_bit
 ### Payload MQTT
 
 Topic: `alumbrado/estado` — QoS 1 — retain: False
+
+El campo `ts` es el timestamp UTC exacto de generación del payload en el publisher. Debe conservar precisión suficiente para distinguir ciclos sucesivos y se usa también como clave de idempotencia en el subscriber: una retransmisión MQTT QoS 1 con el mismo `ts` exacto no debe generar un segundo ciclo en SQLite. Si los valores PLC se repiten en el tiempo con timestamps distintos, se conservan como ciclos distintos para permitir analizar repetición temporal.
 
 ```json
 {
@@ -130,9 +164,17 @@ Topic: `alumbrado/estado` — QoS 1 — retain: False
 
 Cuando `fins_ok: false`: incluir `fins_error` con mensaje, omitir o poner null el resto de campos excepto `ts`.
 
+### Calidad de datos por campo
+
+Contrato actual confirmado:
+- Ciclo correcto: `fins_ok=true`, campos presentes según lectura disponible.
+- Fallo global de lectura FINS: `fins_ok=false`, `fins_error` informado, sin inventar valores PLC.
+
+PENDIENTE: definir si el payload debe distinguir por campo o por sección entre dato ausente, dato inválido y fallo parcial. Hasta que se cierre, los campos no confirmados o no leídos deben ser `null` o raw diagnosticable, nunca valores interpretados como reales.
+
 ### Frecuencia de publicación
 
-- Publicar si cualquier valor del payload difiere del ciclo anterior (comparación campo a campo)
+- Publicar si cualquier valor PLC/diagnóstico del payload difiere del ciclo anterior (comparación campo a campo, excluyendo `ts`)
 - Publicar siempre si han pasado 5 minutos sin publicación (heartbeat)
 - El publisher mantiene en memoria el último payload publicado para la comparación
 - Primera ejecución (sin payload previo en memoria): publicar siempre
@@ -155,18 +197,18 @@ Cuando `fins_ok: false`: incluir `fins_error` con mensaje, omitir o poner null e
 ### Base de datos
 
 **Fichero:** `bd_alumbrado.db` (SQLite, WAL mode, FK enforcement)
-**Engine:** `model/database.py::create_db_engine(url)` — ya implementado y auditado
+**Engine:** `model/database.py::create_db_engine(url)` — crear en esta fase
 
 #### Tabla `ciclo` — una fila por ciclo FINS
 
 | Columna | Tipo | Nullable | Descripción |
 |---|---|---|---|
 | id | Integer PK autoincrement | NO | |
-| timestamp | DateTime(timezone=True) | NO | UTC — siempre aware |
+| timestamp | DateTime(timezone=True) | NO | UTC — siempre aware; valor de `ts` del payload MQTT |
 | fins_ok | Boolean | NO | |
 | fins_error | String(512) | SÍ | |
 | modfunalu | Integer | SÍ | null si fins_ok=False |
-| fotocelula_entrada | Boolean | SÍ | |
+| fotocelula_entrada | Boolean | SÍ | W25.00 entfot1 validado por LD + smoke; nullable si fins_ok=False o lectura ausente |
 | fotocelula_mem_fun | Boolean | SÍ | |
 | fotocelula_mem_act | Boolean | SÍ | |
 | plc_seg | Integer | SÍ | D500 |
@@ -180,8 +222,13 @@ Cuando `fins_ok: false`: incluir `fins_error` con mensaje, omitir o poner null e
 | low_battery | Boolean | SÍ | A402.bit4 |
 | io_verify_error | Boolean | SÍ | A402.bit9 |
 
-Índice: `ix_ciclo_timestamp (timestamp)`
+Índices:
+- `ix_ciclo_timestamp (timestamp)`
+- `uq_ciclo_timestamp (timestamp)` — idempotencia ante duplicados MQTT QoS 1 con el mismo `ts`
+
 Cascade en relaciones: `save-update, merge` (sin delete)
+
+Los modelos antiguos de Fase 1 (`EstadoActual`, `EstadoSistema`, `HistorialSecciones`, `HistorialSistema`) se reemplazan por el esquema Fase 2 (`Ciclo`, `SeccionEstado`, `HorarioTramo`). No mantener doble escritura ni compatibilidad temporal salvo orden explícita.
 
 #### Tabla `seccion_estado` — 112 filas por ciclo
 
@@ -221,6 +268,9 @@ Comportamiento:
 5. Si el JSON es malformado: loguea el error, no escribe nada, continúa escuchando
 6. Si SQLAlchemy lanza excepción: loguea, hace rollback, continúa escuchando
 7. `fins_ok: false` en payload → escribe solo el `Ciclo` con `fins_ok=False` y `fins_error`, sin filas de sección
+8. Si llega un payload con `ts` ya persistido: tratarlo como duplicado MQTT, no escribir nada nuevo, loguear a nivel debug/info y continuar escuchando
+
+PENDIENTE: decidir si los errores SQLite/SQLAlchemy se persisten en una tabla de diagnóstico o quedan solo en log operativo. La spec actual exige log + rollback + continuidad; no define tabla de errores SQLite.
 
 **Fichero nuevo:** `subscriber/__init__.py` (vacío)
 
@@ -253,8 +303,15 @@ Cada request HTTP tiene su propia sesión. Nunca compartir sesión entre subscri
 
 `GET /api/estado`:
 ```python
-db.query(Ciclo).order_by(Ciclo.id.desc()).first()
+ultimo = db.query(Ciclo).order_by(Ciclo.id.desc()).first()
+ultimo_ok = db.query(Ciclo).filter(Ciclo.fins_ok.is_(True)).order_by(Ciclo.id.desc()).first()
 ```
+
+Contrato de respuesta:
+- Devuelve los datos completos del último ciclo correcto (`ultimo_ok`) para que el dashboard siga mostrando el último estado válido.
+- Incluye estado de lectura actual derivado de `ultimo`: `fins_ok`, `fins_error`, `timestamp_ultimo_ciclo`.
+- Si `ultimo` existe y `ultimo.fins_ok=False`, la web muestra banner de error con `fins_error` y marca los datos como desactualizados.
+- Si no hay ningún ciclo correcto todavía, responder `404` o payload vacío controlado según se defina en implementación; no inventar datos.
 
 `GET /api/secciones/actual`:
 ```python
@@ -296,7 +353,7 @@ from fastapi.responses import FileResponse
 app.mount("/static", StaticFiles(directory="web/static"), name="static")
 ```
 
-**CSS variables placeholder (reemplazar con colores empresa mañana):**
+**CSS variables placeholder (PENDIENTE confirmar colores corporativos):**
 ```css
 :root {
   --color-primario: #10494E;
@@ -339,9 +396,15 @@ Placeholder: "Pendiente de confirmar mapping sección→cercha". Tab visible, si
 |---|---|---|
 | P1 | Formato real de D1000–D1007 y D3632–D3651 (horarios) | Smoke test FINS |
 | P2 | Mapping sección→cercha para Tab Cerchas | Documentación PLC o smoke test |
-| P3 | Colores empresa para CSS | Acceso a equipo de trabajo |
+| P3 | Colores empresa para CSS/dashboard | Confirmación de Sebas o equipo de trabajo |
 | P4 | Nombre exacto adaptador USB-Eth en RPi | Inspección física del equipo |
-| P5 | Subred enlace RPi↔Lenovo (propuesta 10.0.0.x/30) | Configuración de red confirmada |
+| P5 | Interfaz y subred enlace RPi↔Lenovo | Configuración de red confirmada |
+| P6 | `W25.00 entfot1` VALIDADO por `LD_Ilum.pdf` + smoke; mantener nota de que no aparece en `Tabla_ES.html` | Resuelto por Sesión B |
+| P6a | `W24` queda PENDIENTE separado; no localizado en `Tabla_ES.html`, `LD_Ilum.pdf` ni JSON locales revisados | Confirmación documental posterior si aplica |
+| P6b | Decidir si el payload diferencia ausente vs inválido por campo/sección | Criterio de arquitectura/API |
+| P6c | Decidir si errores SQLite/SQLAlchemy se persisten o solo se loguean con rollback | Criterio de operación/diagnóstico |
+| P7 | Confirmar alcance real de salidas cercha `W4-W14` y si cubre 160 o 172 señales | `Tabla_ES.html`, `LD_Ilum.pdf` o smoke con alumbrado encendido |
+| P8 | Confirmar orden de palabra para `A264-A265` UDINT `P_Cycle_Time_Value` | Smoke test / documentación Omron |
 
 ---
 
