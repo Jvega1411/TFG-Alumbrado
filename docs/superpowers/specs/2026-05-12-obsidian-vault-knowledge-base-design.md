@@ -29,11 +29,14 @@ TFG-Alumbrado/          ← code repo (existing)
   config/
   model/ api/ tests/
   docs/superpowers/
-  graph.json            ← Graphify raw machine graph (stays here)
-  CLAUDE.md             ← updated to include vault path
+  .graphifyignore       ← excludes .env, raw JSONs, DBs, etc. (committed)
+  graph.json            ← gitignored; regenerated locally by Graphify
+  CLAUDE.md             ← hand-written pointer to vault added by Sebas
 
 TFG-Alumbrado-vault/    ← new repo (this spec)
-  AGENTS.md             ← pinned entry point for all agents
+  AGENTS.md             ← pinned entry point for all agents (hand-written)
+  LOCAL_PATHS.md        ← gitignored; machine-specific code repo path
+  .gitignore            ← ignores LOCAL_PATHS.md, graph.html
   00_Index/
   10_Daily/
   20_Decisions/
@@ -41,7 +44,9 @@ TFG-Alumbrado-vault/    ← new repo (this spec)
   40_Architecture/
   50_AI_Context/
   60_Concepts/
-  graph/                ← Graphify human-readable output
+  graph/
+    GRAPH_REPORT.md     ← committed after manual Sebas review
+    graph.html          ← gitignored; regenerated on demand
 ```
 
 ---
@@ -97,7 +102,7 @@ Decided by: Sebas / Claude Code / Codex
 |---|---|
 | `Variables Validated.md` | Memory addresses confirmed against Tabla_ES.html or LD_Ilum.pdf. Each entry shows area, address, variable name, source of confirmation. |
 | `Variables Pending.md` | Addresses in use but not yet formally confirmed. Includes smoke test empirical evidence. |
-| `Smoke Test Findings.md` | Summary of smoke captures: what was confirmed, anomalies, clock readings, cycle time. Raw JSON files remain in the code repo under `data/smoke_fins/`. |
+| `Smoke Test Findings.md` | **Only indexed smoke source.** Curated, human-written summary of captures: what was confirmed, anomalies, clock readings, cycle time. References raw files by filename (e.g. `fins_smoke_20260512_075408Z.json`) but does not embed raw JSON. Raw files remain in `data/smoke_fins/` and are never copied into the vault. |
 
 ### `40_Architecture/`
 
@@ -107,7 +112,7 @@ Living architecture notes. Agents update these when the architecture evolves.
 |---|---|
 | `Fase 2 Overview.md` | Two-node architecture: RPi (OT) → MQTT → Lenovo (IT) |
 | `MQTT Payload.md` | Payload schema, topic, QoS, change-detection logic |
-| `SQLite Schema.md` | BD_Estados and BD_Historizacion table definitions |
+| `SQLite Schema.md` | Single `bd_alumbrado.db` schema for Fase 2: `ciclo`, `seccion_estado`, `horario_tramo` tables. Does not reference the old BD_Estados/BD_Historizacion split from Fase 1. |
 | `API Contract.md` | FastAPI endpoint list with input/output shapes |
 
 ### `50_AI_Context/`
@@ -210,8 +215,10 @@ Each session (Claude Code or Codex) opens with a header block, then appends its 
 # AGENTS.md — TFG-Alumbrado-vault
 
 ## Code repo path
-`<absolute path to TFG-Alumbrado on this machine>`
-Set by Sebas on first setup. Agents read this to know where the code lives.
+See `LOCAL_PATHS.md` in this vault root (gitignored, machine-specific).
+`LOCAL_PATHS.md` contains the absolute path to `TFG-Alumbrado` on this machine.
+Sebas creates it on first setup. Agents read it to know where the code lives.
+It is never committed — each machine maintains its own copy.
 
 ## Session protocol — mandatory, every session
 
@@ -221,9 +228,9 @@ Set by Sebas on first setup. Agents read this to know where the code lives.
 2. **Read:** `00_Index/Pending Questions.md` before starting work.
 3. **Read:** `graph/GRAPH_REPORT.md` if you need code structure context.
 4. **Work** in the code repo.
-5. **Append** your session block to today's daily note when done.
+5. **Append** your session block to today's daily note when done (even if brief).
 6. **Update** `00_Index/Pending Questions.md` — add new items, strike resolved ones.
-7. **Commit** the vault: `git commit -m "session: YYYY-MM-DD <AgentName>"`
+7. **Commit the vault only if it was modified.** If you only read and made no changes, note "no vault changes this session" in the daily note and skip the commit. Commit message: `git commit -m "session: YYYY-MM-DD <AgentName>"`
 
 ## Writing contract
 
@@ -240,7 +247,7 @@ If two notes contradict each other, the newer date wins.
 **Exception — these sources always override any note:**
 - `Tabla_ES.html` — PLC variable address ground truth
 - `LD_Ilum.pdf` — ladder diagram ground truth
-- Raw smoke test captures in `data/smoke_fins/`
+- Smoke test captures in `data/smoke_fins/` — **for observed values only** (e.g. "W25=1 was read"). Semantic interpretation of what a value means (e.g. "W25=1 means entfot1 is active") still requires confirmation against LD_Ilum.pdf or an explicit Sebas decision.
 - An explicit decision by Sebas (marked "Sebas decision" in the note)
 
 ## What NOT to write to the vault
@@ -261,19 +268,37 @@ If two notes contradict each other, the newer date wins.
 - `docs/superpowers/plans/` and `docs/superpowers/specs/`
 - `Tabla_ES.html`
 - Vault notes in `TFG-Alumbrado-vault/`
-- Curated smoke test summaries (written to `30_PLC/Smoke Test Findings.md`)
+- `30_PLC/Smoke Test Findings.md` (curated only — see above)
 
-**What it does NOT index:**
-- `.env`, `.db` files, `.venv/`, `__pycache__/`
-- Raw smoke JSON files (`data/smoke_fins/*.json`)
-- `graph.json` itself
+**What it does NOT index — enforced via `.graphifyignore`:**
 
-**Output location:**
-- `TFG-Alumbrado-vault/graph/GRAPH_REPORT.md` — human/agent-readable code map
-- `TFG-Alumbrado-vault/graph/graph.html` — interactive visualization
-- `TFG-Alumbrado/graph.json` — raw machine graph (stays in code repo)
+A `.graphifyignore` file must be created and committed **before the first Graphify run**. It must include at minimum:
 
-**Run frequency:** On demand. Sebas runs Graphify after significant code changes or at the start of a new work phase. Not automated in CI.
+```
+.env
+.venv/
+.pytest_cache/
+__pycache__/
+.superpowers/
+data/smoke_fins/*.json
+*.db
+*.sqlite
+graph.json
+graphify-out/
+LOCAL_PATHS.md
+```
+
+**Output location and commit policy:**
+- `TFG-Alumbrado-vault/graph/GRAPH_REPORT.md` — committed to vault **only after manual review by Sebas**
+- `TFG-Alumbrado-vault/graph/graph.html` — regenerated on demand, not committed (too large, always reproducible)
+- `TFG-Alumbrado/graph.json` — **gitignored in the code repo**, never committed; regenerated locally when needed
+
+**Graphify must not modify `CLAUDE.md` or `AGENTS.md`.**
+These files are hand-written agent contracts. Any Graphify feature that auto-generates or overwrites instruction files is disabled. If Graphify produces suggested agent context, it is written to a separate `graph/AGENT_SUGGESTIONS.md` that Sebas reviews and manually integrates — it never auto-updates the contracts.
+
+A short hand-written pointer to the vault is added manually to `TFG-Alumbrado/CLAUDE.md` by Sebas during setup. Graphify does not touch this file.
+
+**Run frequency:** On demand. Sebas runs Graphify when the codebase or vault has changed significantly. Not automated in CI.
 
 ---
 
@@ -284,7 +309,7 @@ If two notes contradict each other, the newer date wins.
 | Two notes on different dates contradict | Newer date wins |
 | A note contradicts Tabla_ES.html | Tabla_ES.html wins |
 | A note contradicts LD_Ilum.pdf | LD_Ilum.pdf wins |
-| A note contradicts a smoke capture | Smoke capture wins (empirical data) |
+| A note contradicts a smoke capture | Smoke capture wins for **observed values** (what was read). Semantic meaning (what the value signifies) still requires LD_Ilum.pdf or Sebas confirmation. |
 | A note contradicts a Sebas decision | Sebas decision wins |
 | Two agents write conflicting content same day | Sebas resolves manually; later session notes the resolution |
 
@@ -292,12 +317,13 @@ If two notes contradict each other, the newer date wins.
 
 ## Setup Steps (high level — implementation plan will detail these)
 
-1. Create `TFG-Alumbrado-vault` as a new git repo
-2. Create the folder structure and seed files (`AGENTS.md`, `00_Index/`, template daily note)
-3. Install and configure Graphify, point it at both repos
-4. Update `TFG-Alumbrado/CLAUDE.md` with vault path and pointer to `AGENTS.md`
-5. Run Graphify first time, commit output to vault
-6. Seed initial content: `30_PLC/Variables Validated.md` from smoke test findings, `40_Architecture/Fase 2 Overview.md` from existing spec
+1. Create `TFG-Alumbrado-vault` as a new git repo with `.gitignore` (ignores `LOCAL_PATHS.md`, `graph.html`)
+2. Create the folder structure and hand-write seed files: `AGENTS.md`, `00_Index/Project Map.md`, `00_Index/Pending Questions.md`, template daily note for today
+3. Create `LOCAL_PATHS.md` locally (not committed) with the absolute path to `TFG-Alumbrado`
+4. Install Graphify; create and commit `.graphifyignore` in the code repo **before first run**
+5. Add a short hand-written vault pointer to `TFG-Alumbrado/CLAUDE.md` manually — Graphify does not touch this file
+6. Run Graphify; review `GRAPH_REPORT.md` output; commit to vault only if content is useful and accurate
+7. Seed initial vault content: `30_PLC/Smoke Test Findings.md` (curated from smoke captures), `40_Architecture/Fase 2 Overview.md` (from existing spec)
 
 ---
 
