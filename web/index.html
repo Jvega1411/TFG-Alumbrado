@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Alumbrado TVITEC</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <img src="/static/Logo.png" alt="TVITEC" class="logo">
+      <div>
+        <h1>Alumbrado TVITEC</h1>
+        <p>Supervision read-only Fase 2</p>
+      </div>
+      <div class="top-status" id="topStatus">PENDIENTE API</div>
+    </header>
+
+    <nav class="tabs" aria-label="Vistas">
+      <button class="tab active" data-view="resumen">Resumen</button>
+      <button class="tab" data-view="secciones">Secciones</button>
+      <button class="tab" data-view="horarios">Horarios</button>
+      <button class="tab" data-view="historial">Historial</button>
+      <button class="tab" data-view="diagnostico">Diagnostico</button>
+    </nav>
+
+    <main class="layout">
+      <section class="workspace" id="view"></section>
+
+      <aside class="detail">
+        <div class="detail-head">
+          <h2>Detalle</h2>
+          <button id="clearDetail" type="button">Limpiar</button>
+        </div>
+        <dl>
+          <div><dt>Elemento</dt><dd id="detailName">-</dd></div>
+          <div><dt>Tipo</dt><dd id="detailType">-</dd></div>
+          <div><dt>Estado</dt><dd id="detailState">-</dd></div>
+          <div><dt>Timestamp</dt><dd id="detailTs">-</dd></div>
+        </dl>
+      </aside>
+    </main>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
