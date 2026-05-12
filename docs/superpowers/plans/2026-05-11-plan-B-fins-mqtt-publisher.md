@@ -85,6 +85,9 @@ def test_heartbeat_interval_default(self):
 def test_acquisition_interval_default_is_10(self):
     assert Config.ACQUISITION_INTERVAL_S == 10.0
 
+# NOTA: test_db_and_acquisition_defaults en el archivo existente aún aserta == 30.0.
+# Cambiarlo a == 10.0 (o eliminar esa línea) al implementar este Task.
+
 def test_api_host_default_is_localhost(self):
     # Default 127.0.0.1: no exponer en todas las interfaces sin configuración explícita
     assert Config.API_HOST == '127.0.0.1'
@@ -142,8 +145,8 @@ Regla de separación OT/IT:
 ```python
 @classmethod
 def _validate_db(cls) -> None:
-    if not cls.DB_URL.strip():
-        raise ValueError("DB_URL no puede estar vacia")
+    if not cls.DB_ESTADOS_URL.strip():
+        raise ValueError("DB_ESTADOS_URL no puede estar vacia")
 
 @classmethod
 def _validate_mqtt(cls) -> None:
@@ -686,39 +689,34 @@ class TestPayloadsEqual:
 
 
 class TestRunPublisher:
+    # _make_mock_client eliminado — dead code. Los tests parchean read_all_variables directamente.
 
-    def _make_mock_client(self, payload: dict):
-        """Crea un FINSClient mock que devuelve variables compatibles con payload."""
-        client = Mock()
-        # Simular respuestas que producirán el payload dado
-        from tests.test_poller import _make_fins_response
-        client.read_h_range.return_value = _make_fins_response([0] * 21)
-        client.read_dm_range.return_value = _make_fins_response([0])
-        client.read_w_range.return_value = _make_fins_response([0])
-        client.read_ar_range.return_value = _make_fins_response([0])
-        return client
+    def _base_vars(self):
+        return {
+            'secciones': [{'id': i+1, 'automatico': False, 'manual': False, 'horario_activo': False} for i in range(112)],
+            'modfunalu': 0, 'fotocelula_entrada': False, 'fotocelula_mem_fun': False,
+            'fotocelula_mem_act': False, 'plc_seg': 0, 'plc_min': 0, 'plc_hora': 0,
+            'plc_dia': 1, 'plc_mes': 1, 'plc_anio': 2026, 'plc_diasem': 1,
+            'horarios_raw': [0]*28, 'cycle_time_error': False,
+            'low_battery': False, 'io_verify_error': False,
+        }
+
+    def _mock_fins(self):
+        mock_fins = Mock()
+        mock_fins.__enter__ = Mock(return_value=mock_fins)
+        mock_fins.__exit__ = Mock(return_value=False)
+        return mock_fins
 
     def test_publishes_on_first_run(self):
-        published = []
-
         def fake_sleep(s):
             raise KeyboardInterrupt
 
         mock_mqtt = Mock()
-        mock_fins = Mock()
-        mock_fins.__enter__ = Mock(return_value=mock_fins)
-        mock_fins.__exit__ = Mock(return_value=False)
 
-        with patch('acquisition.publisher.mqtt.Client', return_value=mock_mqtt), \
-             patch('acquisition.publisher.FINSClient', return_value=mock_fins), \
-             patch('acquisition.publisher.read_all_variables', return_value={
-                 'secciones': [{'id': i+1, 'automatico': False, 'manual': False, 'horario_activo': False} for i in range(112)],
-                 'modfunalu': 0, 'fotocelula_entrada': False, 'fotocelula_mem_fun': False,
-                 'fotocelula_mem_act': False, 'plc_seg': 0, 'plc_min': 0, 'plc_hora': 0,
-                 'plc_dia': 1, 'plc_mes': 1, 'plc_anio': 2026, 'plc_diasem': 1,
-                 'horarios_raw': [0]*28, 'cycle_time_error': False,
-                 'low_battery': False, 'io_verify_error': False,
-             }), \
+        with patch('acquisition.publisher.Config.validate_publisher'), \
+             patch('acquisition.publisher.mqtt.Client', return_value=mock_mqtt), \
+             patch('acquisition.publisher.FINSClient', return_value=self._mock_fins()), \
+             patch('acquisition.publisher.read_all_variables', return_value=self._base_vars()), \
              patch('acquisition.publisher.time.sleep', fake_sleep):
             with pytest.raises(KeyboardInterrupt):
                 run_publisher()
@@ -733,29 +731,24 @@ class TestRunPublisher:
             if call_count[0] >= 2:
                 raise KeyboardInterrupt
 
+        # publish() debe devolver rc=0 e is_published()=True para que last_payload se actualice
+        mock_msg_info = Mock()
+        mock_msg_info.rc = 0  # mqtt.MQTT_ERR_SUCCESS
+        mock_msg_info.is_published.return_value = True
+
         mock_mqtt = Mock()
-        mock_fins = Mock()
-        mock_fins.__enter__ = Mock(return_value=mock_fins)
-        mock_fins.__exit__ = Mock(return_value=False)
+        mock_mqtt.publish.return_value = mock_msg_info
 
-        same_vars = {
-            'secciones': [{'id': i+1, 'automatico': False, 'manual': False, 'horario_activo': False} for i in range(112)],
-            'modfunalu': 0, 'fotocelula_entrada': False, 'fotocelula_mem_fun': False,
-            'fotocelula_mem_act': False, 'plc_seg': 0, 'plc_min': 0, 'plc_hora': 0,
-            'plc_dia': 1, 'plc_mes': 1, 'plc_anio': 2026, 'plc_diasem': 1,
-            'horarios_raw': [0]*28, 'cycle_time_error': False,
-            'low_battery': False, 'io_verify_error': False,
-        }
-
-        with patch('acquisition.publisher.mqtt.Client', return_value=mock_mqtt), \
-             patch('acquisition.publisher.FINSClient', return_value=mock_fins), \
-             patch('acquisition.publisher.read_all_variables', return_value=same_vars), \
+        with patch('acquisition.publisher.Config.validate_publisher'), \
+             patch('acquisition.publisher.mqtt.Client', return_value=mock_mqtt), \
+             patch('acquisition.publisher.FINSClient', return_value=self._mock_fins()), \
+             patch('acquisition.publisher.read_all_variables', return_value=self._base_vars()), \
              patch('acquisition.publisher.time.sleep', fake_sleep), \
              patch('acquisition.publisher.time.monotonic', return_value=0.0):
             with pytest.raises(KeyboardInterrupt):
                 run_publisher()
 
-        # Primer ciclo publica (last_payload=None). Segundo ciclo no (igual + sin heartbeat)
+        # Primer ciclo publica (last_payload=None). Segundo ciclo no (igual + sin heartbeat).
         assert mock_mqtt.publish.call_count == 1
 
     def test_publishes_on_fins_error(self):
@@ -765,12 +758,10 @@ class TestRunPublisher:
             raise KeyboardInterrupt
 
         mock_mqtt = Mock()
-        mock_fins = Mock()
-        mock_fins.__enter__ = Mock(return_value=mock_fins)
-        mock_fins.__exit__ = Mock(return_value=False)
 
-        with patch('acquisition.publisher.mqtt.Client', return_value=mock_mqtt), \
-             patch('acquisition.publisher.FINSClient', return_value=mock_fins), \
+        with patch('acquisition.publisher.Config.validate_publisher'), \
+             patch('acquisition.publisher.mqtt.Client', return_value=mock_mqtt), \
+             patch('acquisition.publisher.FINSClient', return_value=self._mock_fins()), \
              patch('acquisition.publisher.read_all_variables', side_effect=FINSError('timeout')), \
              patch('acquisition.publisher.time.sleep', fake_sleep):
             with pytest.raises(KeyboardInterrupt):
@@ -781,7 +772,7 @@ class TestRunPublisher:
         assert published_payload['fins_ok'] is False
 
     def test_publish_failure_does_not_update_last_payload(self):
-        """Si wait_for_publish falla, last_payload no se actualiza y se reintenta en el siguiente ciclo."""
+        """Si publish() devuelve rc!=0, last_payload no se actualiza y se reintenta en el siguiente ciclo."""
         call_count = [0]
 
         def fake_sleep(s):
@@ -791,32 +782,21 @@ class TestRunPublisher:
 
         mock_msg_info = Mock()
         mock_msg_info.rc = 4  # MQTT_ERR_NO_CONN — entrega fallida
-        mock_msg_info.wait_for_publish = Mock()  # no lanza, pero rc != 0
+        mock_msg_info.is_published.return_value = False
 
         mock_mqtt = Mock()
         mock_mqtt.publish.return_value = mock_msg_info
-        mock_fins = Mock()
-        mock_fins.__enter__ = Mock(return_value=mock_fins)
-        mock_fins.__exit__ = Mock(return_value=False)
 
-        same_vars = {
-            'secciones': [{'id': i+1, 'automatico': False, 'manual': False, 'horario_activo': False} for i in range(112)],
-            'modfunalu': 0, 'fotocelula_entrada': False, 'fotocelula_mem_fun': False,
-            'fotocelula_mem_act': False, 'plc_seg': 0, 'plc_min': 0, 'plc_hora': 0,
-            'plc_dia': 1, 'plc_mes': 1, 'plc_anio': 2026, 'plc_diasem': 1,
-            'horarios_raw': [0]*28, 'cycle_time_error': False,
-            'low_battery': False, 'io_verify_error': False,
-        }
-
-        with patch('acquisition.publisher.mqtt.Client', return_value=mock_mqtt), \
-             patch('acquisition.publisher.FINSClient', return_value=mock_fins), \
-             patch('acquisition.publisher.read_all_variables', return_value=same_vars), \
+        with patch('acquisition.publisher.Config.validate_publisher'), \
+             patch('acquisition.publisher.mqtt.Client', return_value=mock_mqtt), \
+             patch('acquisition.publisher.FINSClient', return_value=self._mock_fins()), \
+             patch('acquisition.publisher.read_all_variables', return_value=self._base_vars()), \
              patch('acquisition.publisher.time.sleep', fake_sleep), \
              patch('acquisition.publisher.time.monotonic', return_value=0.0):
             with pytest.raises(KeyboardInterrupt):
                 run_publisher()
 
-        # Ambos ciclos publican porque rc!=0 impidió actualizar last_payload
+        # Ambos ciclos publican porque rc!=0 impidió actualizar last_payload.
         assert mock_mqtt.publish.call_count == 2
 ```
 
@@ -936,3 +916,11 @@ git commit -m "feat(publisher): MQTT publisher con detección de cambios y heart
 - `datetime.now(tz=timezone.utc)` en publisher.py ✅
 - Tipado compatible Python 3.9+: publisher usa `Optional[dict]`, no `dict | None` ✅
 - Tests de publisher usan mock de FINSClient y mqtt.Client, sin UDP real ✅
+
+### Correcciones aplicadas (auditoría 2026-05-12)
+
+- **Fix 1:** `_validate_db()` usaba `cls.DB_URL` (no existe) → corregido a `cls.DB_ESTADOS_URL`
+- **Fix 2:** `test_db_and_acquisition_defaults` aún aserta `== 30.0` → actualizar a `== 10.0` al implementar Task 1
+- **Fix 3:** Los 4 tests de `TestRunPublisher` no mockeaban `Config.validate_publisher()` → añadido `patch('acquisition.publisher.Config.validate_publisher')` en todos
+- **Fix 4:** `test_does_not_publish_when_unchanged` usaba `Mock()` sin `rc=0` → `last_payload` nunca se actualizaba → corregido con `mock_msg_info.rc = 0` e `is_published.return_value = True`
+- **Fix 5:** `_make_mock_client` era código muerto → eliminado; refactorizado en `_base_vars()` y `_mock_fins()` reutilizables
