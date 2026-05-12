@@ -21,3 +21,17 @@ build/
 graph.json
 graphify-out/
 .graphify_cache/
+
+# Local assistant/tool state
+.claude/settings.local.json
+.superpowers/
+
+# Local/manual industrial artifacts
+LD_Ilum.pdf
+smoke_fins.py
+
+# Archived OPCUA project local/generated/sensitive files
+_old/OPCUA_Alumbrado/.venv/
+_old/OPCUA_Alumbrado/logs/
+_old/OPCUA_Alumbrado/*.log
+_old/OPCUA_Alumbrado/certs/
