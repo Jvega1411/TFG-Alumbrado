@@ -7,8 +7,6 @@ Lee estados desde un PLC Omron Sysmac CJ2M CPU32 mediante FINS/UDP y persiste da
 
 No es sistema de mando. No debe modificar el PLC ni la instalación.
 
-## Contexto técnico
-
 ## Knowledge Base - Vault Obsidian
 
 El vault de conocimiento del proyecto vive en un repositorio separado: `TFG-Alumbrado-vault`.
@@ -25,6 +23,8 @@ El vault contiene:
 Ruta del vault en esta maquina: ver `LOCAL_PATHS.md` en la raiz del vault.
 
 Graphify no debe modificar este fichero ni `AGENTS.md` automaticamente.
+
+## Contexto técnico
 
 ### PLC
 - Omron Sysmac CJ2M CPU32, IP 192.168.250.1, FINS node 1
