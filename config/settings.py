@@ -37,7 +37,7 @@ class Config:
     DB_PORT: int     = int(os.getenv('DB_PORT', '1433'))
 
     # Adquisición
-    ACQUISITION_INTERVAL_S: float = float(os.getenv('ACQUISITION_INTERVAL_S', '30.0'))
+    ACQUISITION_INTERVAL_S: float = float(os.getenv('ACQUISITION_INTERVAL_S', '10.0'))
 
     # Logging
     LOG_DIR: Path = _project_root / os.getenv('LOG_DIR', 'logs')
@@ -51,6 +51,21 @@ class Config:
         'DB_HIST_URL',
         'sqlite:///' + str(_project_root / 'data' / 'bd_historizacion.db'),
     )
+
+    # MQTT — MQTT_BROKER_HOST vacío por defecto: subred enlace no confirmada (PENDIENTE P5)
+    # Configurar en .env antes de arrancar. validate_publisher() falla si está vacío.
+    MQTT_BROKER_HOST: str       = os.getenv('MQTT_BROKER_HOST', '')
+    MQTT_BROKER_PORT: int       = int(os.getenv('MQTT_BROKER_PORT', '1883'))
+    MQTT_TOPIC: str             = os.getenv('MQTT_TOPIC', 'alumbrado/estado')
+    MQTT_CLIENT_ID: str         = os.getenv('MQTT_CLIENT_ID', 'alumbrado-publisher')
+    HEARTBEAT_INTERVAL_S: float = float(os.getenv('HEARTBEAT_INTERVAL_S', '300.0'))
+
+    # FastAPI — 127.0.0.1 por defecto para no exponer en todas las interfaces sin config explícita
+    API_HOST: str = os.getenv('API_HOST', '127.0.0.1')
+    API_PORT: int = int(os.getenv('API_PORT', '8000'))
+
+    # BD — False en producción: usar `alembic upgrade head` en vez de create_all automático
+    DB_AUTO_CREATE: bool = os.getenv('DB_AUTO_CREATE', 'false').lower() == 'true'
 
     @staticmethod
     def _parse_int(value: str) -> int:
@@ -75,3 +90,39 @@ class Config:
             raise ValueError(f"ACQUISITION_INTERVAL_S debe ser positivo: {cls.ACQUISITION_INTERVAL_S}")
         if not (1 <= cls.DB_PORT <= 65535):
             raise ValueError(f"DB_PORT fuera de rango: {cls.DB_PORT}")
+
+    @classmethod
+    def _validate_db(cls) -> None:
+        if not cls.DB_ESTADOS_URL.strip():
+            raise ValueError("DB_ESTADOS_URL no puede estar vacia")
+
+    @classmethod
+    def _validate_mqtt(cls) -> None:
+        if not cls.MQTT_BROKER_HOST.strip():
+            raise ValueError("MQTT_BROKER_HOST no puede estar vacio — configurar en .env")
+        if not (1 <= cls.MQTT_BROKER_PORT <= 65535):
+            raise ValueError(f"MQTT_BROKER_PORT fuera de rango: {cls.MQTT_BROKER_PORT}")
+        if not cls.MQTT_TOPIC.strip():
+            raise ValueError("MQTT_TOPIC no puede estar vacio")
+        if not cls.MQTT_CLIENT_ID.strip():
+            raise ValueError("MQTT_CLIENT_ID no puede estar vacio")
+        if cls.HEARTBEAT_INTERVAL_S <= 0:
+            raise ValueError(f"HEARTBEAT_INTERVAL_S debe ser positivo: {cls.HEARTBEAT_INTERVAL_S}")
+
+    @classmethod
+    def validate_api(cls) -> None:
+        cls._validate_db()
+        if not cls.API_HOST.strip():
+            raise ValueError("API_HOST no puede estar vacio")
+        if not (1 <= cls.API_PORT <= 65535):
+            raise ValueError(f"API_PORT fuera de rango: {cls.API_PORT}")
+
+    @classmethod
+    def validate_publisher(cls) -> None:
+        cls.validate()
+        cls._validate_mqtt()
+
+    @classmethod
+    def validate_subscriber(cls) -> None:
+        cls._validate_db()
+        cls._validate_mqtt()

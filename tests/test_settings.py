@@ -1,4 +1,5 @@
 import pytest
+from unittest.mock import patch
 from config.settings import Config
 
 
@@ -48,7 +49,7 @@ class TestConfigValidation:
 
     def test_db_and_acquisition_defaults(self):
         assert Config.DB_PORT == 1433
-        assert Config.ACQUISITION_INTERVAL_S == 30.0
+        assert Config.ACQUISITION_INTERVAL_S == 10.0
         assert Config.ACQUISITION_INTERVAL_S > 0
 
     def test_db_estados_url_default_is_sqlite(self):
@@ -58,3 +59,71 @@ class TestConfigValidation:
     def test_db_hist_url_default_is_sqlite(self):
         assert Config.DB_HIST_URL.startswith('sqlite:///')
         assert 'bd_historizacion.db' in Config.DB_HIST_URL
+
+
+class TestMqttDefaults:
+
+    def test_mqtt_broker_host_default_is_empty(self):
+        assert Config.MQTT_BROKER_HOST == ''
+
+    def test_mqtt_broker_port_default(self):
+        assert Config.MQTT_BROKER_PORT == 1883
+
+    def test_mqtt_topic_default(self):
+        assert Config.MQTT_TOPIC == 'alumbrado/estado'
+
+    def test_mqtt_client_id_default(self):
+        assert Config.MQTT_CLIENT_ID == 'alumbrado-publisher'
+
+    def test_heartbeat_interval_default(self):
+        assert Config.HEARTBEAT_INTERVAL_S == 300.0
+
+    def test_acquisition_interval_default_is_10(self):
+        assert Config.ACQUISITION_INTERVAL_S == 10.0
+
+    def test_api_host_default_is_localhost(self):
+        assert Config.API_HOST == '127.0.0.1'
+
+    def test_api_port_default(self):
+        assert Config.API_PORT == 8000
+
+    def test_db_auto_create_default_is_false(self):
+        assert Config.DB_AUTO_CREATE is False
+
+
+class TestValidatePublisher:
+
+    def test_validate_publisher_fails_if_mqtt_broker_host_empty(self):
+        with patch.object(Config, 'MQTT_BROKER_HOST', ''):
+            with pytest.raises(ValueError, match='MQTT_BROKER_HOST'):
+                Config.validate_publisher()
+
+    def test_validate_publisher_passes_with_broker_host(self):
+        with patch.object(Config, 'MQTT_BROKER_HOST', '10.0.0.1'):
+            Config.validate_publisher()  # must not raise
+
+
+class TestValidateApi:
+
+    def test_validate_api_passes_without_mqtt_broker_host(self):
+        with patch.object(Config, 'DB_ESTADOS_URL', 'sqlite:///x.db'):
+            Config.validate_api()  # must not raise — does not require MQTT
+
+    def test_validate_api_fails_if_db_estados_url_empty(self):
+        with patch.object(Config, 'DB_ESTADOS_URL', ''):
+            with pytest.raises(ValueError, match='DB_ESTADOS_URL'):
+                Config.validate_api()
+
+    def test_validate_api_fails_if_api_host_empty(self):
+        with patch.object(Config, 'DB_ESTADOS_URL', 'sqlite:///x.db'), \
+             patch.object(Config, 'API_HOST', ''):
+            with pytest.raises(ValueError, match='API_HOST'):
+                Config.validate_api()
+
+
+class TestValidateSubscriber:
+
+    def test_validate_subscriber_does_not_require_fins_config(self):
+        with patch.object(Config, 'DB_ESTADOS_URL', 'sqlite:///x.db'), \
+             patch.object(Config, 'MQTT_BROKER_HOST', '10.0.0.1'):
+            Config.validate_subscriber()  # must not raise
