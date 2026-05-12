@@ -708,30 +708,18 @@ class TestRunPublisher:
         return mock_fins
 
     def test_publishes_on_first_run(self):
-        def fake_sleep(s):
-            raise KeyboardInterrupt
-
         mock_mqtt = Mock()
 
         with patch('acquisition.publisher.Config.validate_publisher'), \
              patch('acquisition.publisher.mqtt.Client', return_value=mock_mqtt), \
              patch('acquisition.publisher.FINSClient', return_value=self._mock_fins()), \
-             patch('acquisition.publisher.read_all_variables', return_value=self._base_vars()), \
-             patch('acquisition.publisher.time.sleep', fake_sleep):
-            with pytest.raises(KeyboardInterrupt):
-                run_publisher()
+             patch('acquisition.publisher.read_all_variables', return_value=self._base_vars()):
+            run_publisher(max_cycles=1)
 
         mock_mqtt.publish.assert_called_once()
 
     def test_does_not_publish_when_unchanged(self):
-        call_count = [0]
-
-        def fake_sleep(s):
-            call_count[0] += 1
-            if call_count[0] >= 2:
-                raise KeyboardInterrupt
-
-        # publish() debe devolver rc=0 e is_published()=True para que last_payload se actualice
+        # publish() devuelve rc=0 e is_published()=True → last_payload se actualiza tras ciclo 1
         mock_msg_info = Mock()
         mock_msg_info.rc = 0  # mqtt.MQTT_ERR_SUCCESS
         mock_msg_info.is_published.return_value = True
@@ -743,29 +731,22 @@ class TestRunPublisher:
              patch('acquisition.publisher.mqtt.Client', return_value=mock_mqtt), \
              patch('acquisition.publisher.FINSClient', return_value=self._mock_fins()), \
              patch('acquisition.publisher.read_all_variables', return_value=self._base_vars()), \
-             patch('acquisition.publisher.time.sleep', fake_sleep), \
              patch('acquisition.publisher.time.monotonic', return_value=0.0):
-            with pytest.raises(KeyboardInterrupt):
-                run_publisher()
+            run_publisher(max_cycles=2)
 
-        # Primer ciclo publica (last_payload=None). Segundo ciclo no (igual + sin heartbeat).
+        # Ciclo 1 publica (last_payload=None). Ciclo 2 no (igual + sin heartbeat).
         assert mock_mqtt.publish.call_count == 1
 
     def test_publishes_on_fins_error(self):
         from fins.frame import FINSError
-
-        def fake_sleep(s):
-            raise KeyboardInterrupt
 
         mock_mqtt = Mock()
 
         with patch('acquisition.publisher.Config.validate_publisher'), \
              patch('acquisition.publisher.mqtt.Client', return_value=mock_mqtt), \
              patch('acquisition.publisher.FINSClient', return_value=self._mock_fins()), \
-             patch('acquisition.publisher.read_all_variables', side_effect=FINSError('timeout')), \
-             patch('acquisition.publisher.time.sleep', fake_sleep):
-            with pytest.raises(KeyboardInterrupt):
-                run_publisher()
+             patch('acquisition.publisher.read_all_variables', side_effect=FINSError('timeout')):
+            run_publisher(max_cycles=1)
 
         assert mock_mqtt.publish.call_count == 1
         published_payload = json.loads(mock_mqtt.publish.call_args[0][1])
@@ -773,13 +754,6 @@ class TestRunPublisher:
 
     def test_publish_failure_does_not_update_last_payload(self):
         """Si publish() devuelve rc!=0, last_payload no se actualiza y se reintenta en el siguiente ciclo."""
-        call_count = [0]
-
-        def fake_sleep(s):
-            call_count[0] += 1
-            if call_count[0] >= 2:
-                raise KeyboardInterrupt
-
         mock_msg_info = Mock()
         mock_msg_info.rc = 4  # MQTT_ERR_NO_CONN — entrega fallida
         mock_msg_info.is_published.return_value = False
@@ -791,10 +765,8 @@ class TestRunPublisher:
              patch('acquisition.publisher.mqtt.Client', return_value=mock_mqtt), \
              patch('acquisition.publisher.FINSClient', return_value=self._mock_fins()), \
              patch('acquisition.publisher.read_all_variables', return_value=self._base_vars()), \
-             patch('acquisition.publisher.time.sleep', fake_sleep), \
              patch('acquisition.publisher.time.monotonic', return_value=0.0):
-            with pytest.raises(KeyboardInterrupt):
-                run_publisher()
+            run_publisher(max_cycles=2)
 
         # Ambos ciclos publican porque rc!=0 impidió actualizar last_payload.
         assert mock_mqtt.publish.call_count == 2
@@ -836,7 +808,12 @@ def _payloads_equal(a: dict, b: dict) -> bool:
     return _without_ts(a) == _without_ts(b)
 
 
-def run_publisher() -> None:
+def run_publisher(max_cycles: Optional[int] = None) -> None:
+    """Loop principal del publisher.
+
+    max_cycles: si se pasa un entero, detiene el loop tras ese número de ciclos.
+    Solo para tests — en producción se omite (loop infinito).
+    """
     Config.validate_publisher()
 
     mqtt_client = mqtt.Client(client_id=Config.MQTT_CLIENT_ID)
@@ -845,9 +822,10 @@ def run_publisher() -> None:
 
     last_payload: Optional[dict] = None
     last_publish_time: float = 0.0
+    cycle = 0
 
     with FINSClient() as fins:
-        while True:
+        while max_cycles is None or cycle < max_cycles:
             now = datetime.now(tz=timezone.utc)
             try:
                 variables = read_all_variables(fins)
@@ -881,7 +859,9 @@ def run_publisher() -> None:
                 except (ValueError, RuntimeError) as exc:
                     logger.warning("MQTT wait_for_publish error: %s", exc)
 
-            time.sleep(Config.ACQUISITION_INTERVAL_S)
+            cycle += 1
+            if max_cycles is None:
+                time.sleep(Config.ACQUISITION_INTERVAL_S)
 ```
 
 - [ ] **Step 4: Verificar que todos los tests pasan**
@@ -924,3 +904,4 @@ git commit -m "feat(publisher): MQTT publisher con detección de cambios y heart
 - **Fix 3:** Los 4 tests de `TestRunPublisher` no mockeaban `Config.validate_publisher()` → añadido `patch('acquisition.publisher.Config.validate_publisher')` en todos
 - **Fix 4:** `test_does_not_publish_when_unchanged` usaba `Mock()` sin `rc=0` → `last_payload` nunca se actualizaba → corregido con `mock_msg_info.rc = 0` e `is_published.return_value = True`
 - **Fix 5:** `_make_mock_client` era código muerto → eliminado; refactorizado en `_base_vars()` y `_mock_fins()` reutilizables
+- **Fix 6:** `run_publisher()` acepta `max_cycles: Optional[int] = None` — en producción se omite (loop infinito); en tests se pasa `max_cycles=1` o `max_cycles=2` en vez de parchear `time.sleep` con `KeyboardInterrupt`
