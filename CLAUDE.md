@@ -9,6 +9,23 @@ No es sistema de mando. No debe modificar el PLC ni la instalación.
 
 ## Contexto técnico
 
+## Knowledge Base - Vault Obsidian
+
+El vault de conocimiento del proyecto vive en un repositorio separado: `TFG-Alumbrado-vault`.
+
+Para agentes: leer `AGENTS.md` en la raiz del vault al inicio de sesiones que requieran contexto historico, decisiones previas o continuidad entre Claude Code y Codex.
+
+El vault contiene:
+- Nota diaria con decisiones y findings de cada sesion (`10_Daily/`)
+- Variables PLC validadas y pendientes (`30_PLC/`)
+- Arquitectura y contratos (`40_Architecture/`)
+- Conceptos tecnicos explicados para Sebas (`60_Concepts/`)
+- Mapa de codigo generado por Graphify (`graph/GRAPH_REPORT.md`)
+
+Ruta del vault en esta maquina: ver `LOCAL_PATHS.md` en la raiz del vault.
+
+Graphify no debe modificar este fichero ni `AGENTS.md` automaticamente.
+
 ### PLC
 - Omron Sysmac CJ2M CPU32, IP 192.168.250.1, FINS node 1
 - FINS/UDP puerto 9600

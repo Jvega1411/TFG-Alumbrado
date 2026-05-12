@@ -16,3 +16,8 @@ build/
 *.pem
 *.key
 *.crt
+
+# Graphify raw/generated artifacts
+graph.json
+graphify-out/
+.graphify_cache/

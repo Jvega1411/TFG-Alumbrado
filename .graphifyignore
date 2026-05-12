@@ -1,0 +1,32 @@
+# Secretos y configuracion local
+.env
+.env.*
+
+# Entornos virtuales y caches Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+
+# Datos de brainstorming y herramientas locales
+.superpowers/
+
+# Capturas raw del PLC: usar resumen curado en el vault
+data/smoke_fins/*.json
+
+# Bases de datos y datos runtime
+*.db
+*.sqlite
+
+# Artefactos Graphify
+graph.json
+graphify-out/
+.graphify_cache/
+
+# Rutas locales de maquina
+LOCAL_PATHS.md
+
+# Git
+.git/
