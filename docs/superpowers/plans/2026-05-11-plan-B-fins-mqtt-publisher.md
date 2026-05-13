@@ -708,7 +708,12 @@ class TestRunPublisher:
         return mock_fins
 
     def test_publishes_on_first_run(self):
+        mock_msg_info = Mock()
+        mock_msg_info.rc = 0
+        mock_msg_info.is_published.return_value = True
+
         mock_mqtt = Mock()
+        mock_mqtt.publish.return_value = mock_msg_info
 
         with patch('acquisition.publisher.Config.validate_publisher'), \
              patch('acquisition.publisher.mqtt.Client', return_value=mock_mqtt), \
@@ -740,7 +745,12 @@ class TestRunPublisher:
     def test_publishes_on_fins_error(self):
         from fins.frame import FINSError
 
+        mock_msg_info = Mock()
+        mock_msg_info.rc = 0
+        mock_msg_info.is_published.return_value = True
+
         mock_mqtt = Mock()
+        mock_mqtt.publish.return_value = mock_msg_info
 
         with patch('acquisition.publisher.Config.validate_publisher'), \
              patch('acquisition.publisher.mqtt.Client', return_value=mock_mqtt), \
@@ -824,44 +834,48 @@ def run_publisher(max_cycles: Optional[int] = None) -> None:
     last_publish_time: float = 0.0
     cycle = 0
 
-    with FINSClient() as fins:
-        while max_cycles is None or cycle < max_cycles:
-            now = datetime.now(tz=timezone.utc)
-            try:
-                variables = read_all_variables(fins)
-                payload = build_payload(now, variables)
-            except (FINSError, OSError, ValueError) as exc:
-                payload = build_error_payload(now, str(exc))
-                logger.warning("Fallo FINS: %s", exc)
-
-            elapsed = time.monotonic() - last_publish_time
-            should_publish = (
-                last_payload is None
-                or not _payloads_equal(payload, last_payload)
-                or elapsed >= Config.HEARTBEAT_INTERVAL_S
-            )
-
-            if should_publish:
-                msg_info = mqtt_client.publish(
-                    Config.MQTT_TOPIC,
-                    json.dumps(payload),
-                    qos=1,
-                )
+    try:
+        with FINSClient() as fins:
+            while max_cycles is None or cycle < max_cycles:
+                now = datetime.now(tz=timezone.utc)
                 try:
-                    msg_info.wait_for_publish(timeout=5.0)
-                    if msg_info.rc == mqtt.MQTT_ERR_SUCCESS and msg_info.is_published():
-                        last_payload = payload
-                        last_publish_time = time.monotonic()
-                        logger.info("MQTT publicado — fins_ok=%s", payload['fins_ok'])
-                    else:
-                        logger.warning("MQTT publish no confirmado: rc=%d is_published=%s",
-                                       msg_info.rc, msg_info.is_published())
-                except (ValueError, RuntimeError) as exc:
-                    logger.warning("MQTT wait_for_publish error: %s", exc)
+                    variables = read_all_variables(fins)
+                    payload = build_payload(now, variables)
+                except (FINSError, OSError, ValueError) as exc:
+                    payload = build_error_payload(now, str(exc))
+                    logger.warning("Fallo FINS: %s", exc)
 
-            cycle += 1
-            if max_cycles is None:
-                time.sleep(Config.ACQUISITION_INTERVAL_S)
+                elapsed = time.monotonic() - last_publish_time
+                should_publish = (
+                    last_payload is None
+                    or not _payloads_equal(payload, last_payload)
+                    or elapsed >= Config.HEARTBEAT_INTERVAL_S
+                )
+
+                if should_publish:
+                    msg_info = mqtt_client.publish(
+                        Config.MQTT_TOPIC,
+                        json.dumps(payload),
+                        qos=1,
+                    )
+                    try:
+                        msg_info.wait_for_publish(timeout=5.0)
+                        if msg_info.rc == mqtt.MQTT_ERR_SUCCESS and msg_info.is_published():
+                            last_payload = payload
+                            last_publish_time = time.monotonic()
+                            logger.info("MQTT publicado — fins_ok=%s", payload['fins_ok'])
+                        else:
+                            logger.warning("MQTT publish no confirmado: rc=%d is_published=%s",
+                                           msg_info.rc, msg_info.is_published())
+                    except (ValueError, RuntimeError) as exc:
+                        logger.warning("MQTT wait_for_publish error: %s", exc)
+
+                cycle += 1
+                if max_cycles is None:
+                    time.sleep(Config.ACQUISITION_INTERVAL_S)
+    finally:
+        mqtt_client.loop_stop()
+        mqtt_client.disconnect()
 ```
 
 - [ ] **Step 4: Verificar que todos los tests pasan**
