@@ -129,6 +129,18 @@ class Ciclo(Base):
     timestamp = Column(UTCDateTime, nullable=False)
     fins_ok = Column(Boolean, nullable=False)
     fins_error = Column(String(512), nullable=True)
+    secciones_status = Column(String(16), nullable=True)
+    secciones_error = Column(String(512), nullable=True)
+    modo_status = Column(String(16), nullable=True)
+    modo_error = Column(String(512), nullable=True)
+    fotocelula_status = Column(String(16), nullable=True)
+    fotocelula_error = Column(String(512), nullable=True)
+    reloj_status = Column(String(16), nullable=True)
+    reloj_error = Column(String(512), nullable=True)
+    horarios_status = Column(String(16), nullable=True)
+    horarios_error = Column(String(512), nullable=True)
+    diagnostico_status = Column(String(16), nullable=True)
+    diagnostico_error = Column(String(512), nullable=True)
     modfunalu = Column(Integer, nullable=True)
     fotocelula_entrada = Column(Boolean, nullable=True)
     fotocelula_mem_fun = Column(Boolean, nullable=True)
@@ -227,6 +239,20 @@ class TestCiclo:
             row = s.query(Ciclo).first()
             assert row.fins_ok is False
             assert "timeout" in row.fins_error
+
+    def test_insert_block_statuses(self, engine):
+        with Session(engine) as s:
+            s.add(Ciclo(
+                timestamp=_ts(),
+                fins_ok=False,
+                secciones_status="ok",
+                diagnostico_status="failed",
+                diagnostico_error="timeout",
+            ))
+            s.commit()
+            row = s.query(Ciclo).first()
+            assert row.secciones_status == "ok"
+            assert row.diagnostico_status == "failed"
 
     def test_unique_timestamp(self, engine):
         with Session(engine) as s:
@@ -358,6 +384,26 @@ class TestParsePayload:
         assert payload.fins_error == "timeout"
         assert payload.secciones == []
 
+    def test_partial_payload_with_secciones_ok_parses(self):
+        import json
+        secciones = [{"id": i+1, "automatico": False, "manual": False, "horario_activo": False} for i in range(112)]
+        data = {
+            "schema_version": 1,
+            "ts": "2026-05-12T08:30:00+00:00",
+            "fins_ok": False,
+            "fins_error": "diagnostico: timeout",
+            "read_status": {
+                "secciones": {"status": "ok", "error": None},
+                "diagnostico": {"status": "failed", "error": "timeout"},
+            },
+            "secciones": secciones,
+            "diagnostico": None,
+        }
+        payload = parse_payload(json.dumps(data).encode("utf-8"))
+        assert payload.fins_ok is False
+        assert payload.block_ok("secciones") is True
+        assert len(payload.secciones) == 112
+
     def test_missing_ts_raises(self):
         import json
         data = json.dumps({"fins_ok": True}).encode("utf-8")
@@ -448,9 +494,16 @@ Crear `subscriber/payload_schema.py`:
 ```python
 import json
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
+
+
+class ReadBlockStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["ok", "failed", "absent"]
+    error: Optional[str] = None
 
 
 class SeccionPayload(BaseModel):
@@ -501,9 +554,11 @@ class DiagnosticoPayload(BaseModel):
 class MQTTPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    schema_version: Optional[StrictInt] = None
     ts: datetime
     fins_ok: StrictBool
     fins_error: Optional[str] = None
+    read_status: Optional[Dict[str, ReadBlockStatus]] = None
     plc_reloj: Optional[RelojPayload] = None
     modo: Optional[ModoPayload] = None
     secciones: List[SeccionPayload] = Field(default_factory=list)
@@ -511,11 +566,11 @@ class MQTTPayload(BaseModel):
     diagnostico: Optional[DiagnosticoPayload] = None
 
     @model_validator(mode="after")
-    def validate_secciones_when_fins_ok(self) -> "MQTTPayload":
-        if self.fins_ok:
+    def validate_secciones_when_block_ok(self) -> "MQTTPayload":
+        if self.block_ok("secciones"):
             if len(self.secciones) != 112:
                 raise ValueError(
-                    f"fins_ok=True requiere exactamente 112 secciones, recibidas: {len(self.secciones)}"
+                    f"bloque secciones ok requiere exactamente 112 secciones, recibidas: {len(self.secciones)}"
                 )
             ids = [s.id for s in self.secciones]
             if len(set(ids)) != 112:
@@ -523,6 +578,29 @@ class MQTTPayload(BaseModel):
             if sorted(ids) != list(range(1, 113)):
                 raise ValueError("IDs de secciones deben ser 1..112")
         return self
+
+    def block_status(self, block: str) -> Optional[str]:
+        if self.read_status is not None:
+            rs = self.read_status.get(block)
+            return rs.status if rs is not None else None
+        return "ok" if self.fins_ok else "failed"
+
+    def block_error(self, block: str) -> Optional[str]:
+        if self.read_status is not None:
+            rs = self.read_status.get(block)
+            return rs.error if rs is not None else None
+        return None if self.fins_ok else self.fins_error
+
+    def block_ok(self, block: str) -> bool:
+        """True si el bloque fue leído correctamente.
+
+        Con read_status (B1): comprueba status == 'ok'.
+        Sin read_status (payloads legacy): fallback a fins_ok global.
+        """
+        if self.read_status is not None:
+            rs = self.read_status.get(block)
+            return rs is not None and rs.status == "ok"
+        return self.fins_ok
 
 
 def parse_payload(payload_bytes: bytes) -> MQTTPayload:
@@ -577,16 +655,19 @@ Clases disponibles tras Task 0:
 class Ciclo(Base):
     id, timestamp (UTCDateTime NOT NULL), fins_ok (Boolean NOT NULL),
     fins_error (String(512) nullable),
+    secciones_status/secciones_error, modo_status/modo_error,
+    fotocelula_status/fotocelula_error, reloj_status/reloj_error,
+    horarios_status/horarios_error, diagnostico_status/diagnostico_error,
     modfunalu (Integer nullable), fotocelula_entrada/mem_fun/mem_act (Boolean nullable),
     plc_seg/min/hora/dia/mes/anio/diasem (Integer nullable),
     cycle_time_error/low_battery/io_verify_error (Boolean nullable)
 
-# model/fase2.py — SeccionEstado: 112 filas por ciclo (solo cuando fins_ok=True)
+# model/fase2.py — SeccionEstado: 112 filas por ciclo (solo cuando read_status.secciones.status == "ok")
 class SeccionEstado(Base):
     id, ciclo_id (FK→ciclo.id), timestamp (UTCDateTime),
     seccion_id (Integer 1-112), automatico/manual/horario_activo (Boolean)
 
-# model/fase2.py — HorarioTramo: 12 filas por ciclo (solo cuando fins_ok=True)
+# model/fase2.py — HorarioTramo: 12 filas por ciclo (solo cuando read_status.horarios.status == "ok")
 class HorarioTramo(Base):
     id, ciclo_id (FK→ciclo.id), tramo_id (Integer 1-12),
     inicio_raw (Integer nullable), fin_raw (Integer nullable)
@@ -678,6 +759,33 @@ def _valid_payload(fins_ok: bool = True, seccion1_auto: bool = False) -> bytes:
             "fins_ok": False,
             "fins_error": "MRES=0x21 SRES=0x08",
         }
+    return json.dumps(data).encode("utf-8")
+
+
+def _partial_payload(secciones_ok: bool = True, horarios_ok: bool = True) -> bytes:
+    secciones = [
+        {"id": i + 1, "automatico": i == 0, "manual": False, "horario_activo": False}
+        for i in range(112)
+    ]
+    data = {
+        "schema_version": 1,
+        "ts": "2026-05-12T08:30:00+00:00",
+        "fins_ok": False,
+        "fins_error": "diagnostico: timeout",
+        "read_status": {
+            "secciones": {"status": "ok" if secciones_ok else "failed", "error": None if secciones_ok else "timeout"},
+            "modo": {"status": "ok", "error": None},
+            "fotocelula": {"status": "ok", "error": None},
+            "reloj": {"status": "ok", "error": None},
+            "horarios": {"status": "ok" if horarios_ok else "failed", "error": None if horarios_ok else "timeout"},
+            "diagnostico": {"status": "failed", "error": "timeout"},
+        },
+        "plc_reloj": {"seg": 0, "min": 30, "hora": 8, "dia": 12, "mes": 5, "anio": 2026, "diasem": 2},
+        "modo": {"modfunalu": 0, "fotocelula_entrada": False, "fotocelula_mem_fun": False, "fotocelula_mem_act": False},
+        "secciones": secciones if secciones_ok else [],
+        "horarios": {"raw_words": [0] * 28} if horarios_ok else None,
+        "diagnostico": None,
+    }
     return json.dumps(data).encode("utf-8")
 
 
@@ -779,6 +887,27 @@ class TestProcessMessageErrorPayload:
         assert ciclo.modfunalu is None
 
 
+class TestProcessMessagePartialPayload:
+
+    def test_partial_with_secciones_ok_creates_seccion_rows(self, db_session):
+        process_message(_partial_payload(secciones_ok=True, horarios_ok=False), db_session)
+        ciclo = db_session.query(Ciclo).first()
+        assert ciclo.fins_ok is False
+        assert ciclo.secciones_status == "ok"
+        assert ciclo.diagnostico_status == "failed"
+        assert db_session.query(SeccionEstado).count() == 112
+
+    def test_partial_with_horarios_ok_creates_horario_rows(self, db_session):
+        process_message(_partial_payload(secciones_ok=False, horarios_ok=True), db_session)
+        ciclo = db_session.query(Ciclo).first()
+        assert ciclo.horarios_status == "ok"
+        assert db_session.query(HorarioTramo).count() == 12
+
+    def test_partial_with_secciones_failed_creates_no_seccion_rows(self, db_session):
+        process_message(_partial_payload(secciones_ok=False, horarios_ok=True), db_session)
+        assert db_session.query(SeccionEstado).count() == 0
+
+
 class TestProcessMessageMalformedPayload:
 
     def test_invalid_json_creates_nothing(self, db_session):
@@ -873,6 +1002,18 @@ def _write_to_db(payload, session: Session) -> None:
         timestamp=ts,
         fins_ok=payload.fins_ok,
         fins_error=payload.fins_error,
+        secciones_status=payload.block_status("secciones"),
+        secciones_error=payload.block_error("secciones"),
+        modo_status=payload.block_status("modo"),
+        modo_error=payload.block_error("modo"),
+        fotocelula_status=payload.block_status("fotocelula"),
+        fotocelula_error=payload.block_error("fotocelula"),
+        reloj_status=payload.block_status("reloj"),
+        reloj_error=payload.block_error("reloj"),
+        horarios_status=payload.block_status("horarios"),
+        horarios_error=payload.block_error("horarios"),
+        diagnostico_status=payload.block_status("diagnostico"),
+        diagnostico_error=payload.block_error("diagnostico"),
         modfunalu=payload.modo.modfunalu if payload.modo else None,
         fotocelula_entrada=payload.modo.fotocelula_entrada if payload.modo else None,
         fotocelula_mem_fun=payload.modo.fotocelula_mem_fun if payload.modo else None,
@@ -891,7 +1032,9 @@ def _write_to_db(payload, session: Session) -> None:
     session.add(ciclo)
     session.flush()  # obtiene ciclo.id antes de insertar FK hijos
 
-    if payload.fins_ok:
+    # Insertar secciones solo si el bloque secciones fue leído correctamente
+    # (fins_ok puede ser False por otros bloques fallidos — ciclo parcial Plan B1)
+    if payload.block_ok("secciones") and payload.secciones:
         for s in payload.secciones:
             session.add(SeccionEstado(
                 ciclo_id=ciclo.id,
@@ -902,9 +1045,11 @@ def _write_to_db(payload, session: Session) -> None:
                 horario_activo=s.horario_activo,
             ))
 
-        # ⚠️ PENDIENTE P1: formato real de raw_words desconocido hasta smoke test FINS
-        # Provisional: 2 words por tramo, inicio=raw_words[i*2], fin=raw_words[i*2+1]
-        raw_words = payload.horarios.raw_words if payload.horarios else []
+    # Insertar horarios solo si el bloque horarios fue leído correctamente
+    # ⚠️ PENDIENTE P1: formato real de raw_words desconocido hasta smoke test FINS
+    # Provisional: 2 words por tramo, inicio=raw_words[i*2], fin=raw_words[i*2+1]
+    if payload.block_ok("horarios") and payload.horarios:
+        raw_words = payload.horarios.raw_words
         for i in range(12):
             session.add(HorarioTramo(
                 ciclo_id=ciclo.id,
@@ -1107,7 +1252,7 @@ git commit -m "feat(subscriber): run_subscriber — loop MQTT paho con sesión S
 
 ## Self-Review del plan C
 
-- Spec C cubierto: subscriber/listener.py con process_message ✅, run_subscriber ✅, fins_ok=False solo escribe Ciclo ✅, malformed JSON silenciado ✅, SQLAlchemy error → rollback ✅
+- Spec C cubierto: subscriber/listener.py con process_message ✅, run_subscriber ✅, `fins_ok=false` admite ciclos parciales y los hijos se insertan por `read_status` ✅, malformed JSON silenciado ✅, SQLAlchemy error → rollback ✅
 - `UTCDateTime` de model/database.py rechaza timestamps naive → `datetime.fromisoformat("2026-05-12T08:30:00+00:00")` devuelve aware ✅
 - `session.flush()` antes de insertar SeccionEstado/HorarioTramo para obtener `ciclo.id` ✅
 - Tests usan SQLite en memoria: sin ficheros, sin cleanup ✅

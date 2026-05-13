@@ -173,6 +173,18 @@ class CicloResponse(BaseModel):
     timestamp: datetime
     fins_ok: bool
     fins_error: Optional[str]
+    secciones_status: Optional[str] = None
+    secciones_error: Optional[str] = None
+    modo_status: Optional[str] = None
+    modo_error: Optional[str] = None
+    fotocelula_status: Optional[str] = None
+    fotocelula_error: Optional[str] = None
+    reloj_status: Optional[str] = None
+    reloj_error: Optional[str] = None
+    horarios_status: Optional[str] = None
+    horarios_error: Optional[str] = None
+    diagnostico_status: Optional[str] = None
+    diagnostico_error: Optional[str] = None
     modfunalu: Optional[int]
     fotocelula_entrada: Optional[bool]
     fotocelula_mem_fun: Optional[bool]
@@ -241,7 +253,7 @@ git commit -m "feat(schemas): modelos Pydantic CicloResponse, SeccionEstadoRespo
 
 ### Contexto de queries
 
-El engine NO se crea al importar `api/routes.py`. `main.py` crea el engine con `Config.DB_URL` y lo inyecta llamando a `init_engine(engine)` antes de registrar/usar el router. Cada request usa `Depends(get_db)` y una `Session` propia:
+El engine NO se crea al importar `api/routes.py`. `main.py` crea el engine con `Config.DB_ESTADOS_URL` y lo inyecta llamando a `init_engine(engine)` antes de registrar/usar el router. Cada request usa `Depends(get_db)` y una `Session` propia:
 
 ```python
 def get_db():
@@ -253,8 +265,8 @@ def get_db():
 
 Queries:
 - `GET /api/estado` → `db.query(Ciclo).order_by(Ciclo.id.desc()).first()`
-- `GET /api/secciones/actual` → último `Ciclo.id` con `fins_ok=True`, luego filtrar `SeccionEstado.ciclo_id == ultimo_id`
-- `GET /api/horarios` → `HorarioTramo` del último ciclo con `fins_ok=True`
+- `GET /api/secciones/actual` → último `Ciclo.id` con `secciones_status == "ok"` y filas `SeccionEstado`, luego filtrar `SeccionEstado.ciclo_id == ultimo_id`
+- `GET /api/horarios` → `HorarioTramo` del último ciclo con `horarios_status == "ok"` y filas `HorarioTramo`
 - `GET /api/historial/ciclos` → `Ciclo` en rango temporal con `limit`
 - `GET /api/historial/secciones` → `SeccionEstado` filtrado por `seccion_id`, rango temporal, `limit`
 
@@ -271,7 +283,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from model.database import Base, create_db_engine
-from model.estados import Ciclo, SeccionEstado, HorarioTramo
+from model.fase2 import Ciclo, SeccionEstado, HorarioTramo
 
 
 def _utc_dt(year=2026, month=5, day=12, hour=8):
@@ -293,6 +305,12 @@ def populated_engine(test_engine):
             timestamp=_utc_dt(),
             fins_ok=True,
             fins_error=None,
+            secciones_status="ok",
+            horarios_status="ok",
+            modo_status="ok",
+            fotocelula_status="ok",
+            reloj_status="ok",
+            diagnostico_status="ok",
             modfunalu=0,
             fotocelula_entrada=False,
             fotocelula_mem_fun=False,
@@ -475,7 +493,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from model.estados import Ciclo, HorarioTramo, SeccionEstado
+from model.fase2 import Ciclo, HorarioTramo, SeccionEstado
 from schemas.lectura import (
     CicloResponse,
     HorarioTramoResponse,
@@ -512,11 +530,12 @@ def get_estado(db: Session = Depends(get_db)):
 
 @router.get("/api/secciones/actual", response_model=List[SeccionEstadoResponse])
 def get_secciones_actual(db: Session = Depends(get_db)):
-    # Busca el último ciclo con fins_ok=True (que tiene filas de secciones)
-    # Si el último ciclo es fins_ok=False, esto devuelve los datos del último ciclo válido
+    # Busca el último ciclo donde el bloque secciones fue leído correctamente.
+    # Un ciclo parcial con fins_ok=False puede ser válido para este bloque.
     ultimo_id = (
         db.query(Ciclo.id)
-        .filter(Ciclo.fins_ok == True)  # noqa: E712
+        .join(SeccionEstado, SeccionEstado.ciclo_id == Ciclo.id)
+        .filter(Ciclo.secciones_status == "ok")
         .order_by(Ciclo.id.desc())
         .limit(1)
         .scalar()
@@ -533,10 +552,11 @@ def get_secciones_actual(db: Session = Depends(get_db)):
 
 @router.get("/api/horarios", response_model=List[HorarioTramoResponse])
 def get_horarios(db: Session = Depends(get_db)):
-    # Igual que secciones: último ciclo con fins_ok=True
+    # Igual que secciones: último ciclo con bloque horarios correcto.
     ultimo_id = (
         db.query(Ciclo.id)
-        .filter(Ciclo.fins_ok == True)  # noqa: E712
+        .join(HorarioTramo, HorarioTramo.ciclo_id == Ciclo.id)
+        .filter(Ciclo.horarios_status == "ok")
         .order_by(Ciclo.id.desc())
         .limit(1)
         .scalar()
@@ -613,48 +633,62 @@ Y actualizar `test_returns_404_when_empty` en `TestGetEstado` y `TestGetSeccione
 
 (Aplicar el mismo patrón en `TestGetSeccionesActual.test_returns_404_when_empty`.)
 
-- [ ] **Step 5: Añadir test de "secciones devuelven último ciclo válido durante fallo FINS"**
+- [ ] **Step 5: Añadir tests de "secciones devuelven último ciclo válido por bloque"**
 
 Añadir a `tests/test_api.py`:
 
 ```python
 class TestUltimoCicloValido:
 
-    def test_secciones_actual_devuelve_ultimo_ciclo_fins_ok_durante_fallo(self, populated_engine):
-        """Si el último ciclo es fins_ok=False, secciones/actual devuelve el ciclo anterior válido."""
+    def test_secciones_actual_devuelve_ciclo_parcial_si_secciones_ok(self, populated_engine):
+        """Si el último ciclo es parcial pero secciones_status=ok, devuelve ese ciclo."""
         import api.routes as routes_module
         routes_module.init_engine(populated_engine)
 
-        # Añadir un ciclo fins_ok=False después del ciclo válido existente
+        # Añadir un ciclo parcial después del ciclo válido existente, con secciones leídas correctamente
         with Session(populated_engine) as session:
-            ciclo_error = Ciclo(
+            ciclo_parcial = Ciclo(
                 timestamp=_utc_dt(hour=9),
                 fins_ok=False,
-                fins_error="timeout",
-                modfunalu=None,
+                fins_error="diagnostico: timeout",
+                secciones_status="ok",
+                diagnostico_status="failed",
+                diagnostico_error="timeout",
             )
-            session.add(ciclo_error)
+            session.add(ciclo_parcial)
+            session.flush()
+            for i in range(112):
+                session.add(SeccionEstado(
+                    ciclo_id=ciclo_parcial.id,
+                    timestamp=_utc_dt(hour=9),
+                    seccion_id=i + 1,
+                    automatico=False,
+                    manual=i == 0,
+                    horario_activo=False,
+                ))
             session.commit()
 
         from main import app
         client = TestClient(app)
         resp = client.get("/api/secciones/actual")
         assert resp.status_code == 200
-        # Debe devolver las 112 secciones del ciclo fins_ok=True anterior
-        assert len(resp.json()) == 112
+        data = resp.json()
+        assert len(data) == 112
+        assert data[0]["manual"] is True
 
-    def test_secciones_actual_404_cuando_nunca_hubo_ciclo_valido(self, test_engine):
-        """Si no hay ningún ciclo fins_ok=True, devuelve 404."""
+    def test_secciones_actual_404_cuando_no_hay_bloque_secciones_ok(self, test_engine):
+        """Si no hay ningún ciclo con secciones_status=ok y filas de secciones, devuelve 404."""
         import api.routes as routes_module
         routes_module.init_engine(test_engine)
 
-        # Insertar solo un ciclo fins_ok=False
+        # Insertar solo un ciclo parcial con secciones fallidas
         with Session(test_engine) as session:
             ciclo_error = Ciclo(
                 timestamp=_utc_dt(),
                 fins_ok=False,
                 fins_error="timeout",
-                modfunalu=None,
+                secciones_status="failed",
+                secciones_error="timeout",
             )
             session.add(ciclo_error)
             session.commit()
@@ -681,7 +715,7 @@ from api.routes import init_engine, router
 from config.settings import Config
 from model.database import Base, create_db_engine
 
-_engine = create_db_engine(Config.DB_URL)
+_engine = create_db_engine(Config.DB_ESTADOS_URL)
 # DB_AUTO_CREATE=true solo para desarrollo/primera vez — en producción usar `alembic upgrade head`
 if Config.DB_AUTO_CREATE:
     Base.metadata.create_all(_engine)
@@ -1231,6 +1265,15 @@ function setFinsErrorBanner(ciclo) {
   }
 }
 
+function blockOk(ciclo, block) {
+  if (!ciclo) return false;
+  const key = `${block}_status`;
+  if (ciclo[key] === undefined || ciclo[key] === null) {
+    return !!ciclo.fins_ok; // fallback para datos legacy sin estado por bloque
+  }
+  return ciclo[key] === 'ok';
+}
+
 // --- Tab 1: Sistema ---
 
 const MODO_LABELS = { 0: 'Horarios', 1: 'Fotocélula', 2: 'Horarios + Fotocélula' };
@@ -1239,7 +1282,7 @@ const MODO_COLORS = { 0: '#3b82f6', 1: '#f59e0b', 2: '#8b5cf6' };
 function renderSistema(ciclo) {
   // Modo
   const modoValor = document.getElementById('modo-valor');
-  if (ciclo.fins_ok && ciclo.modfunalu !== null) {
+  if (blockOk(ciclo, 'modo') && ciclo.modfunalu !== null) {
     modoValor.textContent = MODO_LABELS[ciclo.modfunalu] ?? `Código ${ciclo.modfunalu}`;
     modoValor.style.color = MODO_COLORS[ciclo.modfunalu] ?? '#1a1a2e';
   } else {
@@ -1248,13 +1291,13 @@ function renderSistema(ciclo) {
   }
 
   // Fotocélula
-  setIndicator('ind-fot-entrada',  ciclo.fins_ok && ciclo.fotocelula_entrada);
-  setIndicator('ind-fot-memfun',   ciclo.fins_ok && ciclo.fotocelula_mem_fun);
-  setIndicator('ind-fot-memact',   ciclo.fins_ok && ciclo.fotocelula_mem_act);
+  setIndicator('ind-fot-entrada',  blockOk(ciclo, 'fotocelula') && ciclo.fotocelula_entrada);
+  setIndicator('ind-fot-memfun',   blockOk(ciclo, 'fotocelula') && ciclo.fotocelula_mem_fun);
+  setIndicator('ind-fot-memact',   blockOk(ciclo, 'fotocelula') && ciclo.fotocelula_mem_act);
 
   // Reloj PLC
   const reloj = document.getElementById('reloj-valor');
-  if (ciclo.fins_ok && ciclo.plc_hora !== null) {
+  if (blockOk(ciclo, 'reloj') && ciclo.plc_hora !== null) {
     const pad = n => String(n).padStart(2, '0');
     reloj.textContent =
       `${pad(ciclo.plc_dia)}/${pad(ciclo.plc_mes)}/${ciclo.plc_anio} ` +
@@ -1264,9 +1307,9 @@ function renderSistema(ciclo) {
   }
 
   // Diagnóstico
-  setIndicator('ind-cycle-time',  ciclo.fins_ok && ciclo.cycle_time_error, true);
-  setIndicator('ind-low-battery', ciclo.fins_ok && ciclo.low_battery, true);
-  setIndicator('ind-io-verify',   ciclo.fins_ok && ciclo.io_verify_error, true);
+  setIndicator('ind-cycle-time',  blockOk(ciclo, 'diagnostico') && ciclo.cycle_time_error, true);
+  setIndicator('ind-low-battery', blockOk(ciclo, 'diagnostico') && ciclo.low_battery, true);
+  setIndicator('ind-io-verify',   blockOk(ciclo, 'diagnostico') && ciclo.io_verify_error, true);
 }
 
 function setIndicator(id, active, isError = false) {
