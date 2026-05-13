@@ -7,7 +7,11 @@
 **Principios de seguridad obligatorios:**
 - Comunicación unidireccional: RPi publica MQTT → Lenovo. El Lenovo nunca conecta hacia red OT.
 - Sin ip_forward en RPi: ningún paquete cruza de eth0 (OT) a eth1 (IT) ni al revés.
+- Sin NAT/masquerade en RPi: no se permite SNAT, DNAT ni MASQUERADE entre OT e IT.
+- Forwarding denegado por defecto y sin reglas `route allow` OT↔IT en ningún sentido.
 - Mosquitto escucha solo en la IP del enlace RPi (10.0.0.2), no en la NIC corporativa del Lenovo.
+- Lenovo bloquea cualquier salida hacia 192.168.250.0/24.
+- En producción, el usuario MQTT de la RPi (`gwpub`) solo publica en `alumbrado/#`; no tiene permisos de lectura.
 - Gestión SSH a RPi: exclusivamente via hotspot temporal (wlan0) — sin canal permanente.
 
 **Topología confirmada:**
@@ -474,6 +478,8 @@ check "ping PLC responde" "ping -c 1 -W 2 192.168.250.1"
 check "ping Lenovo responde" "ping -c 1 -W 2 10.0.0.2"
 check "UFW activo" "ufw status | grep -q 'Status: active'"
 check "No bridge activo" "[ -z \"\$(ip link show type bridge 2>/dev/null)\" ]"
+check "Sin NAT/masquerade IPv4" "! iptables -t nat -S 2>/dev/null | grep -Eq 'MASQUERADE|DNAT|SNAT'"
+check "Sin reglas UFW route allow" "! ufw status numbered | grep -Ei 'ALLOW.*FWD|route allow'"
 check "99-no-ip-forward.conf existe" "[ -f /etc/sysctl.d/99-no-ip-forward.conf ]"
 check "publisher.service habilitado" "systemctl is-enabled alumbrado-publisher.service"
 

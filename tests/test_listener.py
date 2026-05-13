@@ -302,6 +302,23 @@ class TestProcessMessageMalformedPayload:
         process_message(json.dumps(data).encode("utf-8"), db_session)
         assert db_session.query(Ciclo).count() == 0
 
+    def test_contradictory_failed_reloj_with_data_creates_nothing(self, db_session):
+        data = _poller_payload_with_failed_block("reloj")
+        data["plc_reloj"] = {"seg": 0, "min": 30, "hora": 8, "dia": 12, "mes": 5, "anio": 2026, "diasem": 2}
+        process_message(json.dumps(data).encode("utf-8"), db_session)
+        assert db_session.query(Ciclo).count() == 0
+
+    def test_contradictory_failed_modo_with_modfunalu_creates_nothing(self, db_session):
+        data = _poller_payload_with_failed_block("modo")
+        data["modo"] = {
+            "modfunalu": 7,
+            "fotocelula_entrada": False,
+            "fotocelula_mem_fun": False,
+            "fotocelula_mem_act": False,
+        }
+        process_message(json.dumps(data).encode("utf-8"), db_session)
+        assert db_session.query(Ciclo).count() == 0
+
 
 def _poller_payload_with_failed_block(block: str) -> dict:
     variables = _sample_variables_for_poller()

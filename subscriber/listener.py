@@ -33,6 +33,10 @@ def process_message(payload_bytes: bytes, session: Session) -> None:
 
 def _write_to_db(payload, session: Session) -> None:
     ts = payload.ts
+    modo_ok = payload.block_ok("modo")
+    fotocelula_ok = payload.block_ok("fotocelula")
+    reloj_ok = payload.block_ok("reloj")
+    diagnostico_ok = payload.block_ok("diagnostico")
 
     ciclo = Ciclo(
         timestamp=ts,
@@ -50,20 +54,20 @@ def _write_to_db(payload, session: Session) -> None:
         horarios_error=payload.block_error("horarios"),
         diagnostico_status=payload.block_status("diagnostico"),
         diagnostico_error=payload.block_error("diagnostico"),
-        modfunalu=payload.modo.modfunalu if payload.modo else None,
-        fotocelula_entrada=payload.modo.fotocelula_entrada if payload.modo else None,
-        fotocelula_mem_fun=payload.modo.fotocelula_mem_fun if payload.modo else None,
-        fotocelula_mem_act=payload.modo.fotocelula_mem_act if payload.modo else None,
-        plc_seg=payload.plc_reloj.seg if payload.plc_reloj else None,
-        plc_min=payload.plc_reloj.min if payload.plc_reloj else None,
-        plc_hora=payload.plc_reloj.hora if payload.plc_reloj else None,
-        plc_dia=payload.plc_reloj.dia if payload.plc_reloj else None,
-        plc_mes=payload.plc_reloj.mes if payload.plc_reloj else None,
-        plc_anio=payload.plc_reloj.anio if payload.plc_reloj else None,
-        plc_diasem=payload.plc_reloj.diasem if payload.plc_reloj else None,
-        cycle_time_error=payload.diagnostico.cycle_time_error if payload.diagnostico else None,
-        low_battery=payload.diagnostico.low_battery if payload.diagnostico else None,
-        io_verify_error=payload.diagnostico.io_verify_error if payload.diagnostico else None,
+        modfunalu=payload.modo.modfunalu if modo_ok and payload.modo else None,
+        fotocelula_entrada=payload.modo.fotocelula_entrada if fotocelula_ok and payload.modo else None,
+        fotocelula_mem_fun=payload.modo.fotocelula_mem_fun if fotocelula_ok and payload.modo else None,
+        fotocelula_mem_act=payload.modo.fotocelula_mem_act if fotocelula_ok and payload.modo else None,
+        plc_seg=payload.plc_reloj.seg if reloj_ok and payload.plc_reloj else None,
+        plc_min=payload.plc_reloj.min if reloj_ok and payload.plc_reloj else None,
+        plc_hora=payload.plc_reloj.hora if reloj_ok and payload.plc_reloj else None,
+        plc_dia=payload.plc_reloj.dia if reloj_ok and payload.plc_reloj else None,
+        plc_mes=payload.plc_reloj.mes if reloj_ok and payload.plc_reloj else None,
+        plc_anio=payload.plc_reloj.anio if reloj_ok and payload.plc_reloj else None,
+        plc_diasem=payload.plc_reloj.diasem if reloj_ok and payload.plc_reloj else None,
+        cycle_time_error=payload.diagnostico.cycle_time_error if diagnostico_ok and payload.diagnostico else None,
+        low_battery=payload.diagnostico.low_battery if diagnostico_ok and payload.diagnostico else None,
+        io_verify_error=payload.diagnostico.io_verify_error if diagnostico_ok and payload.diagnostico else None,
     )
     session.add(ciclo)
     session.flush()

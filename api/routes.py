@@ -32,7 +32,7 @@ def get_db():
 
 @router.get("/api/estado", response_model=CicloResponse)
 def get_estado(db: Session = Depends(get_db)):
-    ciclo = db.query(Ciclo).order_by(Ciclo.id.desc()).first()
+    ciclo = db.query(Ciclo).order_by(Ciclo.timestamp.desc(), Ciclo.id.desc()).first()
     if ciclo is None:
         raise HTTPException(status_code=404, detail="Sin datos")
     return ciclo
@@ -44,7 +44,7 @@ def get_secciones_actual(db: Session = Depends(get_db)):
         db.query(Ciclo.id)
         .join(SeccionEstado, SeccionEstado.ciclo_id == Ciclo.id)
         .filter(Ciclo.secciones_status == "ok")
-        .order_by(Ciclo.id.desc())
+        .order_by(Ciclo.timestamp.desc(), Ciclo.id.desc())
         .limit(1)
         .scalar()
     )
@@ -64,7 +64,7 @@ def get_horarios(db: Session = Depends(get_db)):
         db.query(Ciclo.id)
         .join(HorarioTramo, HorarioTramo.ciclo_id == Ciclo.id)
         .filter(Ciclo.horarios_status == "ok")
-        .order_by(Ciclo.id.desc())
+        .order_by(Ciclo.timestamp.desc(), Ciclo.id.desc())
         .limit(1)
         .scalar()
     )

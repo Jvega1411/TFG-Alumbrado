@@ -5,6 +5,9 @@ from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
 
 
+EXPECTED_READ_STATUS_BLOCKS = ("secciones", "modo", "fotocelula", "reloj", "horarios", "diagnostico")
+
+
 class ReadBlockStatus(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -73,6 +76,20 @@ class MQTTPayload(BaseModel):
 
     @model_validator(mode="after")
     def validate_blocks_when_ok(self) -> "MQTTPayload":
+        if self.read_status is not None:
+            expected = set(EXPECTED_READ_STATUS_BLOCKS)
+            received = set(self.read_status)
+            if received != expected:
+                raise ValueError(
+                    "read_status requiere exactamente bloques: "
+                    + ", ".join(EXPECTED_READ_STATUS_BLOCKS)
+                )
+
+        if self.read_status is not None:
+            all_blocks_ok = all(block.status == "ok" for block in self.read_status.values())
+            if self.fins_ok != all_blocks_ok:
+                raise ValueError("fins_ok incoherente con read_status")
+
         if self.block_ok("secciones"):
             if len(self.secciones) != 112:
                 raise ValueError(
@@ -101,7 +118,27 @@ class MQTTPayload(BaseModel):
                 raise ValueError("bloque horarios ok requiere horarios")
             if len(self.horarios.raw_words) < 24:
                 raise ValueError("bloque horarios ok requiere al menos 24 raw_words")
+        self._reject_failed_block_data()
         return self
+
+    def _reject_failed_block_data(self) -> None:
+        if self.block_status("secciones") in {"failed", "absent"} and self.secciones:
+            raise ValueError("bloque secciones failed/absent no acepta datos de secciones")
+        if self.modo is not None:
+            if self.block_status("modo") in {"failed", "absent"} and self.modo.modfunalu is not None:
+                raise ValueError("bloque modo failed/absent no acepta modo.modfunalu")
+            if self.block_status("fotocelula") in {"failed", "absent"} and (
+                self.modo.fotocelula_entrada is not None
+                or self.modo.fotocelula_mem_fun is not None
+                or self.modo.fotocelula_mem_act is not None
+            ):
+                raise ValueError("bloque fotocelula failed/absent no acepta campos de fotocelula")
+        if self.block_status("reloj") in {"failed", "absent"} and self.plc_reloj is not None:
+            raise ValueError("bloque reloj failed/absent no acepta plc_reloj")
+        if self.block_status("horarios") in {"failed", "absent"} and self.horarios is not None:
+            raise ValueError("bloque horarios failed/absent no acepta horarios")
+        if self.block_status("diagnostico") in {"failed", "absent"} and self.diagnostico is not None:
+            raise ValueError("bloque diagnostico failed/absent no acepta diagnostico")
 
     def block_status(self, block: str) -> Optional[str]:
         if self.read_status is not None:

@@ -206,6 +206,118 @@ class TestGetHistorialSecciones:
 
 
 class TestUltimoCicloValido:
+    def test_estado_usa_timestamp_desc_no_id_desc(self, test_engine):
+        client = _make_client(test_engine)
+        with Session(test_engine) as session:
+            ciclo_nuevo = Ciclo(
+                timestamp=_utc_dt(hour=10),
+                fins_ok=True,
+                fins_error=None,
+                modfunalu=10,
+            )
+            session.add(ciclo_nuevo)
+            session.flush()
+            ciclo_viejo_insertado_despues = Ciclo(
+                timestamp=_utc_dt(hour=9),
+                fins_ok=True,
+                fins_error=None,
+                modfunalu=9,
+            )
+            session.add(ciclo_viejo_insertado_despues)
+            session.commit()
+
+        resp = client.get("/api/estado")
+        assert resp.status_code == 200
+        assert resp.json()["modfunalu"] == 10
+
+    def test_secciones_actual_usa_timestamp_desc_no_id_desc(self, test_engine):
+        client = _make_client(test_engine)
+        with Session(test_engine) as session:
+            ciclo_nuevo = Ciclo(
+                timestamp=_utc_dt(hour=10),
+                fins_ok=True,
+                secciones_status="ok",
+            )
+            session.add(ciclo_nuevo)
+            session.flush()
+            session.add(
+                SeccionEstado(
+                    ciclo_id=ciclo_nuevo.id,
+                    timestamp=_utc_dt(hour=10),
+                    seccion_id=1,
+                    automatico=True,
+                    manual=False,
+                    horario_activo=False,
+                )
+            )
+
+            ciclo_viejo_insertado_despues = Ciclo(
+                timestamp=_utc_dt(hour=9),
+                fins_ok=True,
+                secciones_status="ok",
+            )
+            session.add(ciclo_viejo_insertado_despues)
+            session.flush()
+            session.add(
+                SeccionEstado(
+                    ciclo_id=ciclo_viejo_insertado_despues.id,
+                    timestamp=_utc_dt(hour=9),
+                    seccion_id=1,
+                    automatico=False,
+                    manual=True,
+                    horario_activo=False,
+                )
+            )
+            session.commit()
+
+        resp = client.get("/api/secciones/actual")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data[0]["automatico"] is True
+        assert data[0]["manual"] is False
+
+    def test_horarios_usa_timestamp_desc_no_id_desc(self, test_engine):
+        client = _make_client(test_engine)
+        with Session(test_engine) as session:
+            ciclo_nuevo = Ciclo(
+                timestamp=_utc_dt(hour=10),
+                fins_ok=True,
+                horarios_status="ok",
+            )
+            session.add(ciclo_nuevo)
+            session.flush()
+            session.add(
+                HorarioTramo(
+                    ciclo_id=ciclo_nuevo.id,
+                    timestamp=_utc_dt(hour=10),
+                    tramo_id=1,
+                    inicio_raw=100,
+                    fin_raw=200,
+                )
+            )
+
+            ciclo_viejo_insertado_despues = Ciclo(
+                timestamp=_utc_dt(hour=9),
+                fins_ok=True,
+                horarios_status="ok",
+            )
+            session.add(ciclo_viejo_insertado_despues)
+            session.flush()
+            session.add(
+                HorarioTramo(
+                    ciclo_id=ciclo_viejo_insertado_despues.id,
+                    timestamp=_utc_dt(hour=9),
+                    tramo_id=1,
+                    inicio_raw=900,
+                    fin_raw=901,
+                )
+            )
+            session.commit()
+
+        resp = client.get("/api/horarios")
+        assert resp.status_code == 200
+        assert resp.json()[0]["inicio_raw"] == 100
+
     def test_secciones_actual_devuelve_ciclo_parcial_si_secciones_ok(self, populated_engine):
         from main import app
         from api.routes import init_engine
