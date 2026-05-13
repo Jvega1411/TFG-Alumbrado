@@ -89,6 +89,7 @@ class TestReadAllVariables:
     def test_returns_112_secciones(self):
         result = read_all_variables(self._make_client())
         assert len(result['secciones']) == 112
+        assert result['read_status']['secciones']['status'] == 'ok'
 
     def test_seccion_ids_are_1_to_112(self):
         result = read_all_variables(self._make_client())
@@ -188,6 +189,49 @@ class TestReadAllVariables:
         assert result['plc_hora'] == 8
         assert result['plc_anio'] == 2026
 
+    def test_keeps_available_data_when_reloj_read_fails(self):
+        client = self._make_client()
+
+        def dm_side_effect(start, count):
+            if start == 500:
+                raise RuntimeError('timeout reloj')
+            if start == 116:
+                return _make_fins_response([2])
+            return _make_fins_response([0] * count)
+
+        client.read_dm_range.side_effect = dm_side_effect
+        result = read_all_variables(client)
+        assert len(result['secciones']) == 112
+        assert result['modfunalu'] == 2
+        assert result['plc_hora'] is None
+        assert result['read_status']['reloj']['status'] == 'failed'
+        assert 'timeout reloj' in result['read_status']['reloj']['error']
+        assert result['read_status']['secciones']['status'] == 'ok'
+
+    def test_keeps_available_data_when_diagnostics_read_fails(self):
+        client = self._make_client()
+        client.read_ar_range.side_effect = RuntimeError('timeout diagnostico')
+        result = read_all_variables(client)
+        assert len(result['secciones']) == 112
+        assert result['cycle_time_error'] is None
+        assert result['low_battery'] is None
+        assert result['io_verify_error'] is None
+        assert result['read_status']['diagnostico']['status'] == 'failed'
+
+    def test_marks_failed_sections_without_inventing_section_values(self):
+        client = self._make_client()
+
+        def h_side_effect(start, count):
+            if start == 11:
+                raise RuntimeError('timeout secciones')
+            return _make_fins_response([0] * count)
+
+        client.read_h_range.side_effect = h_side_effect
+        result = read_all_variables(client)
+        assert result['secciones'] == []
+        assert result['read_status']['secciones']['status'] == 'failed'
+        assert result['read_status']['modo']['status'] == 'ok'
+
 
 def _sample_variables() -> dict:
     return {
@@ -202,6 +246,14 @@ def _sample_variables() -> dict:
         'cycle_time_error': False,
         'low_battery': False,
         'io_verify_error': False,
+        'read_status': {
+            'secciones': {'status': 'ok', 'error': None},
+            'modo': {'status': 'ok', 'error': None},
+            'fotocelula': {'status': 'ok', 'error': None},
+            'reloj': {'status': 'ok', 'error': None},
+            'horarios': {'status': 'ok', 'error': None},
+            'diagnostico': {'status': 'ok', 'error': None},
+        },
     }
 
 
@@ -210,6 +262,7 @@ class TestBuildPayload:
     def test_fins_ok_true(self):
         ts = datetime(2026, 5, 12, 8, 30, 0, tzinfo=timezone.utc)
         payload = build_payload(ts, _sample_variables())
+        assert payload['schema_version'] == 1
         assert payload['fins_ok'] is True
         assert payload['fins_error'] is None
 
@@ -251,14 +304,34 @@ class TestBuildPayload:
         assert payload['diagnostico']['low_battery'] is True
         assert payload['diagnostico']['cycle_time_error'] is False
 
+    def test_partial_failure_sets_fins_ok_false_and_keeps_ok_blocks(self):
+        ts = datetime(2026, 5, 12, 8, 30, 0, tzinfo=timezone.utc)
+        vars_ = _sample_variables()
+        vars_['plc_seg'] = None
+        vars_['plc_min'] = None
+        vars_['plc_hora'] = None
+        vars_['plc_dia'] = None
+        vars_['plc_mes'] = None
+        vars_['plc_anio'] = None
+        vars_['plc_diasem'] = None
+        vars_['read_status']['reloj'] = {'status': 'failed', 'error': 'timeout reloj'}
+        payload = build_payload(ts, vars_)
+        assert payload['fins_ok'] is False
+        assert 'reloj' in payload['fins_error']
+        assert len(payload['secciones']) == 112
+        assert payload['plc_reloj']['hora'] is None
+        assert payload['read_status']['reloj']['status'] == 'failed'
+
 
 class TestBuildErrorPayload:
 
     def test_fins_ok_false(self):
         ts = datetime(2026, 5, 12, 8, 30, 0, tzinfo=timezone.utc)
         payload = build_error_payload(ts, 'MRES=0x21 SRES=0x08')
+        assert payload['schema_version'] == 1
         assert payload['fins_ok'] is False
         assert payload['fins_error'] == 'MRES=0x21 SRES=0x08'
+        assert payload['read_status']['secciones']['status'] == 'failed'
 
     def test_has_ts(self):
         ts = datetime(2026, 5, 12, 8, 30, 0, tzinfo=timezone.utc)

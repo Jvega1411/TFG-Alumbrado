@@ -75,6 +75,12 @@ class TestMqttDefaults:
     def test_mqtt_client_id_default(self):
         assert Config.MQTT_CLIENT_ID == 'alumbrado-publisher'
 
+    def test_mqtt_username_default_is_empty(self):
+        assert Config.MQTT_USERNAME == ''
+
+    def test_mqtt_password_default_is_empty(self):
+        assert Config.MQTT_PASSWORD == ''
+
     def test_heartbeat_interval_default(self):
         assert Config.HEARTBEAT_INTERVAL_S == 300.0
 
@@ -101,6 +107,19 @@ class TestValidatePublisher:
     def test_validate_publisher_passes_with_broker_host(self):
         with patch.object(Config, 'MQTT_BROKER_HOST', '10.0.0.1'):
             Config.validate_publisher()  # must not raise
+
+    def test_validate_publisher_allows_empty_mqtt_auth(self):
+        with patch.object(Config, 'MQTT_BROKER_HOST', '10.0.0.1'), \
+             patch.object(Config, 'MQTT_USERNAME', ''), \
+             patch.object(Config, 'MQTT_PASSWORD', ''):
+            Config.validate_publisher()
+
+    def test_validate_publisher_rejects_password_without_username(self):
+        with patch.object(Config, 'MQTT_BROKER_HOST', '10.0.0.1'), \
+             patch.object(Config, 'MQTT_USERNAME', ''), \
+             patch.object(Config, 'MQTT_PASSWORD', 'secret'):
+            with pytest.raises(ValueError, match='MQTT_USERNAME'):
+                Config.validate_publisher()
 
 
 class TestValidateApi:

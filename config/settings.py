@@ -58,6 +58,8 @@ class Config:
     MQTT_BROKER_PORT: int       = int(os.getenv('MQTT_BROKER_PORT', '1883'))
     MQTT_TOPIC: str             = os.getenv('MQTT_TOPIC', 'alumbrado/estado')
     MQTT_CLIENT_ID: str         = os.getenv('MQTT_CLIENT_ID', 'alumbrado-publisher')
+    MQTT_USERNAME: str          = os.getenv('MQTT_USERNAME', '')
+    MQTT_PASSWORD: str          = os.getenv('MQTT_PASSWORD', '')
     HEARTBEAT_INTERVAL_S: float = float(os.getenv('HEARTBEAT_INTERVAL_S', '300.0'))
 
     # FastAPI — 127.0.0.1 por defecto para no exponer en todas las interfaces sin config explícita
@@ -106,6 +108,8 @@ class Config:
             raise ValueError("MQTT_TOPIC no puede estar vacio")
         if not cls.MQTT_CLIENT_ID.strip():
             raise ValueError("MQTT_CLIENT_ID no puede estar vacio")
+        if cls.MQTT_PASSWORD and not cls.MQTT_USERNAME.strip():
+            raise ValueError("MQTT_USERNAME no puede estar vacio si MQTT_PASSWORD esta configurado")
         if cls.HEARTBEAT_INTERVAL_S <= 0:
             raise ValueError(f"HEARTBEAT_INTERVAL_S debe ser positivo: {cls.HEARTBEAT_INTERVAL_S}")
 

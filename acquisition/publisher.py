@@ -15,12 +15,16 @@ logger = logging.getLogger(__name__)
 
 
 def _payloads_equal(a: dict, b: dict) -> bool:
-    """Compara payloads ignorando el timestamp de generacion."""
-    return _without_ts(a) == _without_ts(b)
+    """Compara payloads ignorando campos que cambian por avance natural del ciclo."""
+    return _without_runtime_fields(a) == _without_runtime_fields(b)
 
 
-def _without_ts(payload: dict) -> dict:
-    return {key: value for key, value in payload.items() if key != 'ts'}
+def _without_runtime_fields(payload: dict) -> dict:
+    return {
+        key: value
+        for key, value in payload.items()
+        if key not in ('ts', 'plc_reloj')
+    }
 
 
 def run_publisher(max_cycles: Optional[int] = None) -> None:
@@ -31,6 +35,8 @@ def run_publisher(max_cycles: Optional[int] = None) -> None:
     Config.validate_publisher()
 
     mqtt_client = mqtt.Client(client_id=Config.MQTT_CLIENT_ID)
+    if Config.MQTT_USERNAME.strip():
+        mqtt_client.username_pw_set(Config.MQTT_USERNAME, Config.MQTT_PASSWORD or None)
     mqtt_client.connect(Config.MQTT_BROKER_HOST, Config.MQTT_BROKER_PORT, keepalive=60)
     mqtt_client.loop_start()
 
@@ -69,14 +75,18 @@ def run_publisher(max_cycles: Optional[int] = None) -> None:
 
 
 def _publish_payload(mqtt_client: mqtt.Client, payload: dict) -> bool:
-    msg_info = mqtt_client.publish(
-        Config.MQTT_TOPIC,
-        json.dumps(payload),
-        qos=1,
-    )
+    try:
+        msg_info = mqtt_client.publish(
+            Config.MQTT_TOPIC,
+            json.dumps(payload),
+            qos=1,
+        )
+    except (ValueError, RuntimeError, OSError) as exc:
+        logger.warning("MQTT publish error: %s", exc)
+        return False
     try:
         msg_info.wait_for_publish(timeout=5.0)
-    except (ValueError, RuntimeError) as exc:
+    except (ValueError, RuntimeError, OSError) as exc:
         logger.warning("MQTT wait_for_publish error: %s", exc)
         return False
 
