@@ -12,6 +12,12 @@
 
 ---
 
+## Enmienda requerida por Plan B1 - payload parcial
+
+El API debe tratar `fins_ok=false` como posible ciclo parcial. Para vistas actuales, consultar el ultimo ciclo valido por bloque (`secciones`, `horarios`, etc.) usando `read_status` o campos equivalentes persistidos por Plan C, no solo el ultimo ciclo global con `fins_ok=true`.
+
+---
+
 ## File Map
 
 | Fichero | Acción | Responsabilidad |

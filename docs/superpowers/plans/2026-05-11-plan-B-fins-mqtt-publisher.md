@@ -12,6 +12,24 @@
 
 ---
 
+## Enmienda B1 - contrato parcial y robustez publisher
+
+**Estado:** aplicada tras auditoria del 2026-05-13.
+
+Cambios obligatorios sobre el Plan B original:
+- Payload v1.1 aditivo: conserva campos top-level existentes y anade `schema_version: 1` + `read_status`.
+- `read_status` tiene estado por bloque: `secciones`, `modo`, `fotocelula`, `reloj`, `horarios`, `diagnostico`.
+- Estados permitidos por bloque: `ok`, `failed`, `absent`, `invalid`; B1 implementa `ok/failed` y reserva `absent/invalid` para validaciones posteriores.
+- `fins_ok=true` significa ciclo completo: todos los bloques estan `ok`.
+- Si un bloque falla, `fins_ok=false`, `fins_error` resume los bloques fallidos y los datos correctos ya leidos se conservan.
+- Si un bloque falla, sus campos quedan `None` o vacios; nunca se inventan `False`/`0`.
+- La deteccion de cambios ignora `ts` y `plc_reloj`; el reloj PLC se publica cuando se publica el ciclo, pero no dispara publicacion por si solo.
+- El heartbeat sigue publicando aunque el payload operacional no cambie.
+- MQTT auth es opcional: `MQTT_USERNAME` vacio mantiene modo dev; si esta configurado, el publisher llama `username_pw_set()` antes de conectar.
+- Si `connect()` al broker falla al arrancar, el publisher hace fail-fast: no abre FINS, no publica, y deja que systemd reinicie.
+
+---
+
 ## File Map
 
 | Fichero | Acción | Responsabilidad |

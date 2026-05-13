@@ -4,9 +4,15 @@
 
 **Goal:** Recibir mensajes MQTT del topic `alumbrado/estado` y persistir cada ciclo en SQLite (tablas `ciclo`, `seccion_estado`, `horario_tramo`).
 
-**Architecture:** `subscriber/payload_schema.py` define un modelo Pydantic que valida cada payload recibido antes de escribir a BD (contrato estricto: 112 secciones, IDs 1..112, raw_words, tipos). `subscriber/listener.py` expone `process_message(payload_bytes, session)` (función pura testeable con SQLite en memoria) y `run_subscriber()` (loop MQTT con paho). El subscriber tiene su propia sesión SQLAlchemy, independiente de FastAPI. Los modelos SQLAlchemy ya están implementados en `model/estados.py`.
+**Architecture:** `subscriber/payload_schema.py` define un modelo Pydantic que valida cada payload recibido antes de escribir a BD (contrato estricto: 112 secciones, IDs 1..112, raw_words, tipos). `subscriber/listener.py` expone `process_message(payload_bytes, session)` (función pura testeable con SQLite en memoria) y `run_subscriber()` (loop MQTT con paho). El subscriber tiene su propia sesión SQLAlchemy, independiente de FastAPI. Los modelos Fase 2 (`Ciclo`, `SeccionEstado`, `HorarioTramo`) y `model/database.py` se crean en **Task 0** de este plan. `model/estados.py` contiene los modelos Fase 1 — **no tocar, dejar intacto**.
 
-**Tech Stack:** Python 3.12, paho-mqtt, SQLAlchemy 2.0, Pydantic v2, SQLite (WAL mode), model/database.py ya implementado y auditado.
+**Tech Stack:** Python 3.12, paho-mqtt, SQLAlchemy 2.0, Pydantic v2, SQLite (WAL mode).
+
+**Estado real del repo al iniciar este plan:**
+- `model/estados.py` existe con modelos Fase 1 (`EstadoActual`, `EstadoSistema`, `HistorialSecciones`, `HistorialSistema`) — dejar sin modificar.
+- `model/database.py` NO existe — crear en Task 0.
+- `model/fase2.py` NO existe — crear en Task 0 con `Ciclo`, `SeccionEstado`, `HorarioTramo`.
+- `config/settings.py` tiene `DB_ESTADOS_URL`, `DB_AUTO_CREATE`, `validate_subscriber()` — usar tal cual, sin modificar.
 
 **Invariante obligatoria:** Nunca `datetime.utcnow()`. Siempre `datetime.fromisoformat()` para parsear el campo `ts` del payload (que llega como ISO8601 UTC).
 
@@ -17,15 +23,282 @@
 
 ---
 
+## Enmienda requerida por Plan B1 - payload parcial
+
+Plan C debe aceptar el contrato v1.1 del publisher:
+- Campos top-level actuales + `schema_version` + `read_status`.
+- `fins_ok=true` significa ciclo completo; `fins_ok=false` puede significar ciclo parcial, no necesariamente fallo total.
+- `read_status` decide que bloques son persistibles.
+- Insertar `SeccionEstado` solo si `read_status.secciones.status == "ok"`.
+- Insertar `HorarioTramo` solo si `read_status.horarios.status == "ok"`.
+- Persistir en `Ciclo` los campos disponibles y dejar `NULL` los campos de bloques fallidos.
+- Plan D debera consultar el ultimo ciclo valido por bloque, no solo el ultimo ciclo con `fins_ok=true`.
+
+---
+
 ## File Map
 
 | Fichero | Acción | Responsabilidad |
 |---|---|---|
+| `model/database.py` | **Crear** | `Base`, `UTCDateTime`, `create_db_engine()` — Task 0 |
+| `model/fase2.py` | **Crear** | `Ciclo`, `SeccionEstado`, `HorarioTramo` — Task 0 |
+| `tests/test_modelo_fase2.py` | **Crear** | Smoke tests de esquema Fase 2 — Task 0 |
+| `model/estados.py` | Sin cambios | Modelos Fase 1 — **no tocar** |
+| `tests/test_model.py` | Sin cambios | Tests Fase 1 — **no tocar** |
 | `subscriber/__init__.py` | Crear | Vacío — marca el paquete |
 | `subscriber/payload_schema.py` | Crear | Validación Pydantic del payload MQTT entrante |
 | `subscriber/listener.py` | Crear | process_message() + run_subscriber() |
 | `tests/test_payload_schema.py` | Crear | Tests del schema de validación |
 | `tests/test_listener.py` | Crear | Tests de process_message con SQLite en memoria |
+
+---
+
+## Task 0: Crear modelo Fase 2 — model/database.py + model/fase2.py
+
+**Prerrequisito de todo lo demás.** Sin estos ficheros los imports de Tasks 1-3 fallan con `ModuleNotFoundError`.
+
+**Files:**
+- Crear: `model/database.py`
+- Crear: `model/fase2.py`
+- Crear: `tests/test_modelo_fase2.py`
+- Sin cambios: `model/estados.py`, `tests/test_model.py`
+
+- [ ] **Step 1: Crear model/database.py**
+
+```python
+from datetime import timezone
+
+from sqlalchemy import DateTime, create_engine, event
+from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.types import TypeDecorator
+
+
+class UTCDateTime(TypeDecorator):
+    """DateTime que almacena UTC y rechaza valores sin timezone."""
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is not None and value.tzinfo is None:
+            raise ValueError(
+                f"UTCDateTime requiere datetime con timezone, recibido naive: {value!r}"
+            )
+        return value
+
+    def process_result_value(self, value, dialect):
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+def create_db_engine(url: str):
+    """Engine SQLAlchemy con WAL mode y FK enforcement para SQLite."""
+    engine = create_engine(url, connect_args={"check_same_thread": False})
+    if url.startswith("sqlite"):
+        @event.listens_for(engine, "connect")
+        def _set_sqlite_pragma(conn, record):
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
+    return engine
+```
+
+- [ ] **Step 2: Crear model/fase2.py**
+
+Columnas exactas de la spec `2026-05-11-fase2-sistema-completo-design.md` sección "Subsistema C".
+
+```python
+from sqlalchemy import Boolean, Column, ForeignKey, Index, Integer, String, UniqueConstraint
+
+from model.database import Base, UTCDateTime
+
+
+class Ciclo(Base):
+    __tablename__ = "ciclo"
+    __table_args__ = (
+        Index("ix_ciclo_timestamp", "timestamp"),
+        UniqueConstraint("timestamp", name="uq_ciclo_timestamp"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    timestamp = Column(UTCDateTime, nullable=False)
+    fins_ok = Column(Boolean, nullable=False)
+    fins_error = Column(String(512), nullable=True)
+    modfunalu = Column(Integer, nullable=True)
+    fotocelula_entrada = Column(Boolean, nullable=True)
+    fotocelula_mem_fun = Column(Boolean, nullable=True)
+    fotocelula_mem_act = Column(Boolean, nullable=True)
+    plc_seg = Column(Integer, nullable=True)
+    plc_min = Column(Integer, nullable=True)
+    plc_hora = Column(Integer, nullable=True)
+    plc_dia = Column(Integer, nullable=True)
+    plc_mes = Column(Integer, nullable=True)
+    plc_anio = Column(Integer, nullable=True)
+    plc_diasem = Column(Integer, nullable=True)
+    cycle_time_error = Column(Boolean, nullable=True)
+    low_battery = Column(Boolean, nullable=True)
+    io_verify_error = Column(Boolean, nullable=True)
+
+
+class SeccionEstado(Base):
+    __tablename__ = "seccion_estado"
+    __table_args__ = (
+        Index("ix_seccion_estado_ciclo_id", "ciclo_id"),
+        Index("ix_seccion_estado_timestamp", "timestamp"),
+        Index("ix_seccion_estado_seccion_timestamp", "seccion_id", "timestamp"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ciclo_id = Column(Integer, ForeignKey("ciclo.id"), nullable=False)
+    timestamp = Column(UTCDateTime, nullable=False)
+    seccion_id = Column(Integer, nullable=False)
+    automatico = Column(Boolean, nullable=False)
+    manual = Column(Boolean, nullable=False)
+    horario_activo = Column(Boolean, nullable=False)
+
+
+class HorarioTramo(Base):
+    __tablename__ = "horario_tramo"
+    __table_args__ = (
+        Index("ix_horario_tramo_ciclo_id", "ciclo_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ciclo_id = Column(Integer, ForeignKey("ciclo.id"), nullable=False)
+    tramo_id = Column(Integer, nullable=False)
+    inicio_raw = Column(Integer, nullable=True)
+    fin_raw = Column(Integer, nullable=True)
+```
+
+- [ ] **Step 3: Crear tests/test_modelo_fase2.py**
+
+```python
+import pytest
+import sqlalchemy.exc
+from datetime import datetime, timezone
+
+from sqlalchemy import inspect
+from sqlalchemy.orm import Session
+
+from model.database import Base, create_db_engine
+from model.fase2 import Ciclo, HorarioTramo, SeccionEstado
+
+
+@pytest.fixture
+def engine():
+    e = create_db_engine("sqlite:///:memory:")
+    Base.metadata.create_all(e)
+    return e
+
+
+def _ts(hour: int = 10) -> datetime:
+    return datetime(2026, 5, 13, hour, 0, 0, tzinfo=timezone.utc)
+
+
+class TestEsquema:
+
+    def test_tablas_creadas(self, engine):
+        names = inspect(engine).get_table_names()
+        assert {"ciclo", "seccion_estado", "horario_tramo"}.issubset(set(names))
+
+    def test_tablas_fase1_no_creadas(self, engine):
+        names = inspect(engine).get_table_names()
+        assert "estado_actual" not in names
+        assert "historial_secciones" not in names
+
+
+class TestCiclo:
+
+    def test_insert_fins_ok(self, engine):
+        with Session(engine) as s:
+            s.add(Ciclo(timestamp=_ts(), fins_ok=True))
+            s.commit()
+            assert s.query(Ciclo).count() == 1
+
+    def test_insert_fins_error(self, engine):
+        with Session(engine) as s:
+            s.add(Ciclo(timestamp=_ts(), fins_ok=False, fins_error="timeout"))
+            s.commit()
+            row = s.query(Ciclo).first()
+            assert row.fins_ok is False
+            assert "timeout" in row.fins_error
+
+    def test_unique_timestamp(self, engine):
+        with Session(engine) as s:
+            s.add(Ciclo(timestamp=_ts(), fins_ok=True))
+            s.commit()
+        with Session(engine) as s:
+            s.add(Ciclo(timestamp=_ts(), fins_ok=False))
+            with pytest.raises(sqlalchemy.exc.IntegrityError):
+                s.commit()
+
+    def test_naive_datetime_rejected(self, engine):
+        naive = datetime(2026, 5, 13, 10, 0, 0)
+        with Session(engine) as s:
+            with pytest.raises((ValueError, Exception)):
+                s.add(Ciclo(timestamp=naive, fins_ok=True))
+                s.flush()
+
+
+class TestSeccionEstado:
+
+    def test_fk_ciclo(self, engine):
+        with Session(engine) as s:
+            ciclo = Ciclo(timestamp=_ts(), fins_ok=True)
+            s.add(ciclo)
+            s.flush()
+            s.add(SeccionEstado(
+                ciclo_id=ciclo.id, timestamp=_ts(),
+                seccion_id=1, automatico=True, manual=False, horario_activo=False,
+            ))
+            s.commit()
+            assert s.query(SeccionEstado).count() == 1
+
+    def test_fk_violation_rejected(self, engine):
+        with Session(engine) as s:
+            s.add(SeccionEstado(
+                ciclo_id=9999, timestamp=_ts(),
+                seccion_id=1, automatico=False, manual=False, horario_activo=False,
+            ))
+            with pytest.raises(sqlalchemy.exc.IntegrityError):
+                s.commit()
+
+
+class TestHorarioTramo:
+
+    def test_fk_ciclo(self, engine):
+        with Session(engine) as s:
+            ciclo = Ciclo(timestamp=_ts(), fins_ok=True)
+            s.add(ciclo)
+            s.flush()
+            s.add(HorarioTramo(ciclo_id=ciclo.id, tramo_id=1, inicio_raw=800, fin_raw=2200))
+            s.commit()
+            row = s.query(HorarioTramo).first()
+            assert row.tramo_id == 1
+            assert row.inicio_raw == 800
+```
+
+- [ ] **Step 4: Verificar que los tests pasan y los tests Fase 1 siguen intactos**
+
+```
+pytest tests/test_modelo_fase2.py -v
+pytest tests/test_model.py -v
+pytest tests/ -v
+```
+
+Expected: todos PASSED. Los tests de Fase 1 en `test_model.py` no deben verse afectados.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add model/database.py model/fase2.py tests/test_modelo_fase2.py
+git commit -m "feat(model): crear modelo Fase 2 — Ciclo, SeccionEstado, HorarioTramo, UTCDateTime"
+```
 
 ---
 
@@ -290,10 +563,17 @@ git commit -m "feat(subscriber): payload_schema — validación Pydantic estrict
 
 ### Contexto de models
 
-`model/estados.py` ya implementado. Clases disponibles:
+Creados en Task 0. Imports correctos:
 
 ```python
-# Ciclo — una fila por mensaje MQTT recibido
+from model.database import Base, create_db_engine   # model/database.py — Task 0
+from model.fase2 import Ciclo, HorarioTramo, SeccionEstado  # model/fase2.py — Task 0
+```
+
+Clases disponibles tras Task 0:
+
+```python
+# model/fase2.py — Ciclo: una fila por mensaje MQTT recibido
 class Ciclo(Base):
     id, timestamp (UTCDateTime NOT NULL), fins_ok (Boolean NOT NULL),
     fins_error (String(512) nullable),
@@ -301,21 +581,15 @@ class Ciclo(Base):
     plc_seg/min/hora/dia/mes/anio/diasem (Integer nullable),
     cycle_time_error/low_battery/io_verify_error (Boolean nullable)
 
-# SeccionEstado — 112 filas por ciclo (solo cuando fins_ok=True)
+# model/fase2.py — SeccionEstado: 112 filas por ciclo (solo cuando fins_ok=True)
 class SeccionEstado(Base):
     id, ciclo_id (FK→ciclo.id), timestamp (UTCDateTime),
     seccion_id (Integer 1-112), automatico/manual/horario_activo (Boolean)
 
-# HorarioTramo — 12 filas por ciclo (solo cuando fins_ok=True)
+# model/fase2.py — HorarioTramo: 12 filas por ciclo (solo cuando fins_ok=True)
 class HorarioTramo(Base):
     id, ciclo_id (FK→ciclo.id), tramo_id (Integer 1-12),
     inicio_raw (Integer nullable), fin_raw (Integer nullable)
-```
-
-`model/database.py` ya implementado:
-```python
-from model.database import create_db_engine, Base
-# create_db_engine(url: str) → Engine con WAL + FK enforcement para SQLite
 ```
 
 `UTCDateTime` (en model/database.py) rechaza datetimes sin timezone. Todo timestamp DEBE tener tzinfo.
@@ -365,7 +639,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from model.database import Base, create_db_engine
-from model.estados import Ciclo, HorarioTramo, SeccionEstado
+from model.fase2 import Ciclo, HorarioTramo, SeccionEstado
 from subscriber.listener import process_message
 
 
@@ -568,7 +842,7 @@ from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from model.estados import Ciclo, HorarioTramo, SeccionEstado
+from model.fase2 import Ciclo, HorarioTramo, SeccionEstado
 from subscriber.payload_schema import parse_payload
 
 logger = logging.getLogger(__name__)
@@ -768,7 +1042,7 @@ from model.database import Base, create_db_engine
 def run_subscriber() -> None:
     Config.validate_subscriber()
 
-    engine = create_db_engine(Config.DB_URL)
+    engine = create_db_engine(Config.DB_ESTADOS_URL)
     # DB_AUTO_CREATE=true solo para desarrollo/primera vez — en producción usar alembic upgrade head
     if Config.DB_AUTO_CREATE:
         Base.metadata.create_all(engine)
@@ -801,7 +1075,7 @@ from sqlalchemy.orm import Session
 
 from config.settings import Config
 from model.database import Base, create_db_engine
-from model.estados import Ciclo, HorarioTramo, SeccionEstado
+from model.fase2 import Ciclo, HorarioTramo, SeccionEstado
 
 logger = logging.getLogger(__name__)
 ```

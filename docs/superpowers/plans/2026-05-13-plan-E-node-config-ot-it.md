@@ -320,6 +320,10 @@ allow_anonymous true
 # Prod: descomentar estas dos lineas y comentar allow_anonymous true
 # allow_anonymous false
 # password_file C:\Program Files\mosquitto\passwd
+#
+# En RPi, configurar en .env antes de activar prod:
+# MQTT_USERNAME=gwpub
+# MQTT_PASSWORD=<valor generado por el operador; no commitear>
 
 # ACL por topic (aplica en prod con allow_anonymous false)
 acl_file C:\Program Files\mosquitto\acl.conf
@@ -372,6 +376,14 @@ netstat -ano | Select-String "1883"
 
 ## Task 7: Lenovo — Windows Defender Firewall
 
+> **NOTA DE DISEÑO — por qué NO hay regla Block para puerto 1883:**
+> En Windows Defender Firewall las reglas Block tienen precedencia absoluta sobre las Allow,
+> independientemente del orden de creación. Una regla `Block TCP 1883 from Any` bloquearía
+> también a 10.0.0.1, anulando la Allow. El aislamiento se garantiza por capas inferiores:
+> (1) `listener 1883 10.0.0.2` en mosquitto.conf — Mosquitto no escucha en la NIC corporativa;
+> (2) topología de red — solo la RPi tiene ruta a 10.0.0.2.
+> La regla Allow para 10.0.0.1 añade intención explícita sin necesitar Block complementario.
+
 **Files:**
 - Crear: `scripts/node-config/lenovo-firewall.ps1`
 
@@ -380,11 +392,17 @@ netstat -ano | Select-String "1883"
 ```powershell
 # lenovo-firewall.ps1 — Reglas Windows Defender Firewall para nodo IT
 # Ejecutar como administrador.
+#
+# Solo 2 reglas: Allow MQTT desde RPi + Block salida a red OT.
+# NO se crea Block general para 1883: en Windows Firewall Block > Allow,
+# lo que anularia la Allow. El aislamiento de 1883 lo da mosquitto.conf (bind 10.0.0.2).
 
-Write-Host "[1/4] Eliminando reglas previas de Mosquitto si existen..."
-Get-NetFirewallRule | Where-Object {$_.DisplayName -like "*Mosquitto*" -or $_.DisplayName -like "*OT*alumbrado*"} | Remove-NetFirewallRule
+Write-Host "[1/3] Eliminando reglas previas de Mosquitto/OT si existen..."
+Get-NetFirewallRule | Where-Object {
+    $_.DisplayName -like "*Mosquitto*" -or $_.DisplayName -like "*OT*alumbrado*"
+} | Remove-NetFirewallRule
 
-Write-Host "[2/4] Permitir MQTT entrante SOLO desde RPi (10.0.0.1)..."
+Write-Host "[2/3] Permitir MQTT entrante desde RPi (10.0.0.1) en puerto 1883..."
 New-NetFirewallRule `
     -DisplayName "Mosquitto MQTT desde RPi" `
     -Direction Inbound `
@@ -395,18 +413,7 @@ New-NetFirewallRule `
     -Profile Any `
     -Enabled True
 
-Write-Host "[3/4] Bloquear MQTT desde cualquier otra fuente..."
-New-NetFirewallRule `
-    -DisplayName "Mosquitto MQTT bloqueo general" `
-    -Direction Inbound `
-    -Protocol TCP `
-    -LocalPort 1883 `
-    -RemoteAddress Any `
-    -Action Block `
-    -Profile Any `
-    -Enabled True
-
-Write-Host "[4/4] Bloquear salida hacia red OT 192.168.250.0/24..."
+Write-Host "[3/3] Bloquear salida hacia red OT 192.168.250.0/24..."
 New-NetFirewallRule `
     -DisplayName "Bloquear salida red OT alumbrado" `
     -Direction Outbound `
@@ -415,10 +422,14 @@ New-NetFirewallRule `
     -Profile Any `
     -Enabled True
 
-Write-Host "Reglas creadas:"
+Write-Host "Reglas aplicadas:"
 Get-NetFirewallRule | Where-Object {
     $_.DisplayName -like "*Mosquitto*" -or $_.DisplayName -like "*OT*alumbrado*"
 } | Select-Object DisplayName, Direction, Action, Enabled
+
+Write-Host ""
+Write-Host "Verificar que Mosquitto escucha solo en 10.0.0.2 (no en 0.0.0.0):"
+netstat -ano | Select-String "1883"
 ```
 
 **[MANUAL] Ejecutar en Lenovo (PowerShell como administrador):**
@@ -587,5 +598,6 @@ sudo RPi_IT_IF=<RPi_IT_IF> bash scripts/node-config/verify-rpi.sh
 - `paho-mqtt` está en `requirements.txt` del proyecto y disponible en `.venv`.
 - La subnet 10.0.0.0/30 no colisiona con ninguna red existente en el Lenovo (verificar con `Get-NetIPAddress` antes de Task 5).
 - La configuración `allow_anonymous true` en Mosquitto es aceptable para dev; cambiar a `false` con `password_file` antes de producción.
+- En producción con `allow_anonymous false`, el publisher usa `MQTT_USERNAME`/`MQTT_PASSWORD` desde `.env`; nunca commitear valores reales.
 - Plan B implementado y todos sus tests pasan antes de ejecutar Task 3 (systemd service).
 - Plan C (subscriber SQLite en Lenovo) queda fuera del scope de este plan — se ejecuta después.
