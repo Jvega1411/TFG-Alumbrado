@@ -108,6 +108,53 @@ class TestParsePayload:
         with pytest.raises(ValueError):
             parse_payload(json.dumps(data).encode("utf-8"))
 
+    def test_reloj_ok_requires_plc_reloj(self):
+        data = _full_payload()
+        data["read_status"] = _read_status_with("reloj", "ok")
+        data["plc_reloj"] = None
+        with pytest.raises(ValueError, match="reloj"):
+            parse_payload(json.dumps(data).encode("utf-8"))
+
+    def test_modo_ok_requires_modfunalu(self):
+        data = _full_payload()
+        data["read_status"] = _read_status_with("modo", "ok")
+        data["modo"]["modfunalu"] = None
+        with pytest.raises(ValueError, match="modo"):
+            parse_payload(json.dumps(data).encode("utf-8"))
+
+    def test_fotocelula_ok_requires_fotocelula_fields(self):
+        data = _full_payload()
+        data["read_status"] = _read_status_with("fotocelula", "ok")
+        data["modo"]["fotocelula_entrada"] = None
+        with pytest.raises(ValueError, match="fotocelula"):
+            parse_payload(json.dumps(data).encode("utf-8"))
+
+    def test_diagnostico_ok_requires_diagnostico(self):
+        data = _full_payload()
+        data["read_status"] = _read_status_with("diagnostico", "ok")
+        data["diagnostico"] = None
+        with pytest.raises(ValueError, match="diagnostico"):
+            parse_payload(json.dumps(data).encode("utf-8"))
+
+    def test_horarios_ok_requires_24_raw_words(self):
+        data = _full_payload()
+        data["read_status"] = _read_status_with("horarios", "ok")
+        data["horarios"] = {"raw_words": [0] * 23}
+        with pytest.raises(ValueError, match="24"):
+            parse_payload(json.dumps(data).encode("utf-8"))
+
+    def test_modo_can_keep_modfunalu_when_fotocelula_failed(self):
+        data = _full_payload()
+        data["fins_ok"] = False
+        data["read_status"] = _read_status_with("modo", "ok")
+        data["read_status"]["fotocelula"] = {"status": "failed", "error": "timeout"}
+        data["modo"]["fotocelula_entrada"] = None
+        data["modo"]["fotocelula_mem_fun"] = None
+        data["modo"]["fotocelula_mem_act"] = None
+        payload = parse_payload(json.dumps(data).encode("utf-8"))
+        assert payload.block_ok("modo") is True
+        assert payload.block_ok("fotocelula") is False
+
 
 def _full_payload(secciones=None):
     if secciones is None:
@@ -129,4 +176,12 @@ def _full_payload(secciones=None):
         "secciones": secciones,
         "horarios": {"raw_words": [0] * 28},
         "diagnostico": {"cycle_time_error": False, "low_battery": False, "io_verify_error": False},
+    }
+
+
+def _read_status_with(ok_block: str, status: str) -> dict:
+    blocks = ["secciones", "modo", "fotocelula", "reloj", "horarios", "diagnostico"]
+    return {
+        block: {"status": status if block == ok_block else "failed", "error": None if block == ok_block else "failed"}
+        for block in blocks
     }

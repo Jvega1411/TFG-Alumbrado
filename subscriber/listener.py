@@ -89,6 +89,7 @@ def _write_to_db(payload, session: Session) -> None:
             session.add(
                 HorarioTramo(
                     ciclo_id=ciclo.id,
+                    timestamp=ts,
                     tramo_id=i + 1,
                     inicio_raw=raw_words[i * 2] if i * 2 < len(raw_words) else None,
                     fin_raw=raw_words[i * 2 + 1] if i * 2 + 1 < len(raw_words) else None,

@@ -70,26 +70,42 @@ class TestCicloResponse:
 
 class TestSeccionEstadoResponse:
     def test_from_dict(self):
-        data = {"seccion_id": 1, "automatico": True, "manual": False, "horario_activo": True}
+        data = {
+            "ciclo_id": 10,
+            "timestamp": _utc_now(),
+            "seccion_id": 1,
+            "automatico": True,
+            "manual": False,
+            "horario_activo": True,
+        }
         resp = SeccionEstadoResponse(**data)
+        assert resp.ciclo_id == 10
         assert resp.seccion_id == 1
         assert resp.automatico is True
 
     def test_all_false(self):
-        data = {"seccion_id": 112, "automatico": False, "manual": False, "horario_activo": False}
+        data = {
+            "ciclo_id": 10,
+            "timestamp": _utc_now(),
+            "seccion_id": 112,
+            "automatico": False,
+            "manual": False,
+            "horario_activo": False,
+        }
         resp = SeccionEstadoResponse(**data)
         assert resp.manual is False
 
 
 class TestHorarioTramoResponse:
     def test_from_dict(self):
-        data = {"tramo_id": 3, "inicio_raw": 480, "fin_raw": 1320}
+        data = {"ciclo_id": 10, "timestamp": _utc_now(), "tramo_id": 3, "inicio_raw": 480, "fin_raw": 1320}
         resp = HorarioTramoResponse(**data)
+        assert resp.ciclo_id == 10
         assert resp.tramo_id == 3
         assert resp.inicio_raw == 480
 
     def test_nullable_fields(self):
-        data = {"tramo_id": 1, "inicio_raw": None, "fin_raw": None}
+        data = {"ciclo_id": 10, "timestamp": _utc_now(), "tramo_id": 1, "inicio_raw": None, "fin_raw": None}
         resp = HorarioTramoResponse(**data)
         assert resp.inicio_raw is None
 

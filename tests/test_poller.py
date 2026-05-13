@@ -319,8 +319,54 @@ class TestBuildPayload:
         assert payload['fins_ok'] is False
         assert 'reloj' in payload['fins_error']
         assert len(payload['secciones']) == 112
-        assert payload['plc_reloj']['hora'] is None
+        assert payload['plc_reloj'] is None
         assert payload['read_status']['reloj']['status'] == 'failed'
+
+    def test_failed_modo_keeps_fotocelula_without_modfunalu(self):
+        ts = datetime(2026, 5, 12, 8, 30, 0, tzinfo=timezone.utc)
+        vars_ = _sample_variables()
+        vars_['modfunalu'] = None
+        vars_['read_status']['modo'] = {'status': 'failed', 'error': 'timeout modo'}
+        payload = build_payload(ts, vars_)
+        assert payload['modo']['modfunalu'] is None
+        assert payload['modo']['fotocelula_entrada'] is False
+
+    def test_failed_fotocelula_keeps_modfunalu_without_fotocelula_fields(self):
+        ts = datetime(2026, 5, 12, 8, 30, 0, tzinfo=timezone.utc)
+        vars_ = _sample_variables()
+        vars_['fotocelula_entrada'] = None
+        vars_['fotocelula_mem_fun'] = None
+        vars_['fotocelula_mem_act'] = None
+        vars_['read_status']['fotocelula'] = {'status': 'failed', 'error': 'timeout fotocelula'}
+        payload = build_payload(ts, vars_)
+        assert payload['modo']['modfunalu'] == 0
+        assert payload['modo']['fotocelula_entrada'] is None
+
+    def test_failed_horarios_sets_horarios_none(self):
+        ts = datetime(2026, 5, 12, 8, 30, 0, tzinfo=timezone.utc)
+        vars_ = _sample_variables()
+        vars_['horarios_raw'] = []
+        vars_['read_status']['horarios'] = {'status': 'failed', 'error': 'timeout horarios'}
+        payload = build_payload(ts, vars_)
+        assert payload['horarios'] is None
+
+    def test_failed_diagnostico_sets_diagnostico_none(self):
+        ts = datetime(2026, 5, 12, 8, 30, 0, tzinfo=timezone.utc)
+        vars_ = _sample_variables()
+        vars_['cycle_time_error'] = None
+        vars_['low_battery'] = None
+        vars_['io_verify_error'] = None
+        vars_['read_status']['diagnostico'] = {'status': 'failed', 'error': 'timeout diagnostico'}
+        payload = build_payload(ts, vars_)
+        assert payload['diagnostico'] is None
+
+    def test_failed_secciones_sets_empty_secciones(self):
+        ts = datetime(2026, 5, 12, 8, 30, 0, tzinfo=timezone.utc)
+        vars_ = _sample_variables()
+        vars_['secciones'] = []
+        vars_['read_status']['secciones'] = {'status': 'failed', 'error': 'timeout secciones'}
+        payload = build_payload(ts, vars_)
+        assert payload['secciones'] == []
 
 
 class TestBuildErrorPayload:

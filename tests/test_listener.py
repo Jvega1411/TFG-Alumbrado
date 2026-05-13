@@ -1,9 +1,11 @@
 import json
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlalchemy.orm import Session
 
+from acquisition.poller import build_payload
 from model.database import Base, create_db_engine
 from model.fase2 import Ciclo, HorarioTramo, SeccionEstado
 from subscriber.listener import process_message, run_subscriber
@@ -112,6 +114,12 @@ class TestProcessMessageValidPayload:
         process_message(_valid_payload(), db_session)
         assert db_session.query(HorarioTramo).count() == 12
 
+    def test_horario_tramo_timestamp_equals_ciclo_timestamp(self, db_session):
+        process_message(_valid_payload(), db_session)
+        ciclo = db_session.query(Ciclo).first()
+        tramo = db_session.query(HorarioTramo).first()
+        assert tramo.timestamp == ciclo.timestamp
+
     def test_horario_tramo_ids_are_1_to_12(self, db_session):
         process_message(_valid_payload(), db_session)
         ids = [h.tramo_id for h in db_session.query(HorarioTramo).order_by(HorarioTramo.tramo_id).all()]
@@ -189,6 +197,62 @@ class TestProcessMessagePartialPayload:
         process_message(_partial_payload(secciones_ok=False, horarios_ok=True), db_session)
         assert db_session.query(SeccionEstado).count() == 0
 
+    def test_poller_payload_with_reloj_failed_keeps_secciones(self, db_session):
+        payload = _poller_payload_with_failed_block("reloj")
+        process_message(json.dumps(payload).encode("utf-8"), db_session)
+        ciclo = db_session.query(Ciclo).first()
+        assert ciclo.reloj_status == "failed"
+        assert ciclo.plc_hora is None
+        assert db_session.query(SeccionEstado).count() == 112
+
+    def test_poller_payload_with_modo_failed_keeps_fotocelula(self, db_session):
+        payload = _poller_payload_with_failed_block("modo")
+        process_message(json.dumps(payload).encode("utf-8"), db_session)
+        ciclo = db_session.query(Ciclo).first()
+        assert ciclo.modo_status == "failed"
+        assert ciclo.modfunalu is None
+        assert ciclo.fotocelula_status == "ok"
+        assert ciclo.fotocelula_entrada is False
+
+    def test_poller_payload_with_fotocelula_failed_keeps_modo(self, db_session):
+        payload = _poller_payload_with_failed_block("fotocelula")
+        process_message(json.dumps(payload).encode("utf-8"), db_session)
+        ciclo = db_session.query(Ciclo).first()
+        assert ciclo.modo_status == "ok"
+        assert ciclo.modfunalu == 0
+        assert ciclo.fotocelula_status == "failed"
+        assert ciclo.fotocelula_entrada is None
+
+    def test_poller_payload_with_diagnostico_failed_keeps_secciones(self, db_session):
+        payload = _poller_payload_with_failed_block("diagnostico")
+        process_message(json.dumps(payload).encode("utf-8"), db_session)
+        ciclo = db_session.query(Ciclo).first()
+        assert ciclo.diagnostico_status == "failed"
+        assert ciclo.cycle_time_error is None
+        assert db_session.query(SeccionEstado).count() == 112
+
+    def test_poller_payload_with_horarios_failed_creates_no_horario_rows(self, db_session):
+        payload = _poller_payload_with_failed_block("horarios")
+        process_message(json.dumps(payload).encode("utf-8"), db_session)
+        ciclo = db_session.query(Ciclo).first()
+        assert ciclo.horarios_status == "failed"
+        assert db_session.query(HorarioTramo).count() == 0
+
+    def test_poller_payload_with_secciones_failed_creates_no_seccion_rows(self, db_session):
+        payload = _poller_payload_with_failed_block("secciones")
+        process_message(json.dumps(payload).encode("utf-8"), db_session)
+        ciclo = db_session.query(Ciclo).first()
+        assert ciclo.secciones_status == "failed"
+        assert db_session.query(SeccionEstado).count() == 0
+
+    def test_duplicate_payload_does_not_duplicate_rows(self, db_session):
+        payload = _valid_payload()
+        process_message(payload, db_session)
+        process_message(payload, db_session)
+        assert db_session.query(Ciclo).count() == 1
+        assert db_session.query(SeccionEstado).count() == 112
+        assert db_session.query(HorarioTramo).count() == 12
+
 
 class TestProcessMessageMalformedPayload:
     def test_invalid_json_creates_nothing(self, db_session):
@@ -231,6 +295,68 @@ class TestProcessMessageMalformedPayload:
         }
         process_message(json.dumps(data).encode("utf-8"), db_session)
         assert db_session.query(Ciclo).count() == 0
+
+    def test_short_horarios_creates_nothing(self, db_session):
+        data = json.loads(_valid_payload().decode("utf-8"))
+        data["horarios"] = {"raw_words": [0] * 23}
+        process_message(json.dumps(data).encode("utf-8"), db_session)
+        assert db_session.query(Ciclo).count() == 0
+
+
+def _poller_payload_with_failed_block(block: str) -> dict:
+    variables = _sample_variables_for_poller()
+    variables["read_status"][block] = {"status": "failed", "error": f"timeout {block}"}
+    if block == "secciones":
+        variables["secciones"] = []
+    elif block == "modo":
+        variables["modfunalu"] = None
+    elif block == "fotocelula":
+        variables["fotocelula_entrada"] = None
+        variables["fotocelula_mem_fun"] = None
+        variables["fotocelula_mem_act"] = None
+    elif block == "reloj":
+        for key in ["plc_seg", "plc_min", "plc_hora", "plc_dia", "plc_mes", "plc_anio", "plc_diasem"]:
+            variables[key] = None
+    elif block == "horarios":
+        variables["horarios_raw"] = []
+    elif block == "diagnostico":
+        variables["cycle_time_error"] = None
+        variables["low_battery"] = None
+        variables["io_verify_error"] = None
+    ts = datetime(2026, 5, 12, 8, 30, 0, tzinfo=timezone.utc)
+    return build_payload(ts, variables)
+
+
+def _sample_variables_for_poller() -> dict:
+    return {
+        "secciones": [
+            {"id": i + 1, "automatico": False, "manual": False, "horario_activo": False}
+            for i in range(112)
+        ],
+        "modfunalu": 0,
+        "fotocelula_entrada": False,
+        "fotocelula_mem_fun": False,
+        "fotocelula_mem_act": False,
+        "plc_seg": 0,
+        "plc_min": 30,
+        "plc_hora": 8,
+        "plc_dia": 12,
+        "plc_mes": 5,
+        "plc_anio": 2026,
+        "plc_diasem": 2,
+        "horarios_raw": [0] * 28,
+        "cycle_time_error": False,
+        "low_battery": False,
+        "io_verify_error": False,
+        "read_status": {
+            "secciones": {"status": "ok", "error": None},
+            "modo": {"status": "ok", "error": None},
+            "fotocelula": {"status": "ok", "error": None},
+            "reloj": {"status": "ok", "error": None},
+            "horarios": {"status": "ok", "error": None},
+            "diagnostico": {"status": "ok", "error": None},
+        },
+    }
 
 
 class TestRunSubscriber:

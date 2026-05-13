@@ -67,6 +67,7 @@ class HorarioTramo(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     ciclo_id = Column(Integer, ForeignKey("ciclo.id"), nullable=False)
+    timestamp = Column(UTCDateTime, nullable=False)
     tramo_id = Column(Integer, nullable=False)
     inicio_raw = Column(Integer, nullable=True)
     fin_raw = Column(Integer, nullable=True)

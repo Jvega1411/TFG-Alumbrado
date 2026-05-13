@@ -64,6 +64,7 @@ def populated_engine(test_engine):
             session.add(
                 HorarioTramo(
                     ciclo_id=ciclo.id,
+                    timestamp=_utc_dt(),
                     tramo_id=i + 1,
                     inicio_raw=None,
                     fin_raw=None,
@@ -132,6 +133,8 @@ class TestGetSeccionesActual:
         data = api_client.get("/api/secciones/actual").json()
         sec1 = next(s for s in data if s["seccion_id"] == 1)
         assert sec1["automatico"] is True
+        assert "timestamp" in sec1
+        assert "ciclo_id" in sec1
 
     def test_ordered_by_seccion_id(self, api_client):
         data = api_client.get("/api/secciones/actual").json()
@@ -157,6 +160,8 @@ class TestGetHorarios:
         data = api_client.get("/api/horarios").json()
         ids = [t["tramo_id"] for t in data]
         assert ids == list(range(1, 13))
+        assert "timestamp" in data[0]
+        assert "ciclo_id" in data[0]
 
 
 class TestGetHistorialCiclos:
@@ -273,6 +278,7 @@ class TestUltimoCicloValido:
                 session.add(
                     HorarioTramo(
                         ciclo_id=ciclo_parcial.id,
+                        timestamp=_utc_dt(hour=9),
                         tramo_id=i + 1,
                         inicio_raw=100 + i,
                         fin_raw=200 + i,

@@ -36,10 +36,10 @@ class RelojPayload(BaseModel):
 class ModoPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    modfunalu: StrictInt
-    fotocelula_entrada: StrictBool
-    fotocelula_mem_fun: StrictBool
-    fotocelula_mem_act: StrictBool
+    modfunalu: Optional[StrictInt] = None
+    fotocelula_entrada: Optional[StrictBool] = None
+    fotocelula_mem_fun: Optional[StrictBool] = None
+    fotocelula_mem_act: Optional[StrictBool] = None
 
 
 class HorariosPayload(BaseModel):
@@ -72,7 +72,7 @@ class MQTTPayload(BaseModel):
     diagnostico: Optional[DiagnosticoPayload] = None
 
     @model_validator(mode="after")
-    def validate_secciones_when_block_ok(self) -> "MQTTPayload":
+    def validate_blocks_when_ok(self) -> "MQTTPayload":
         if self.block_ok("secciones"):
             if len(self.secciones) != 112:
                 raise ValueError(
@@ -83,6 +83,24 @@ class MQTTPayload(BaseModel):
                 raise ValueError("IDs de secciones duplicados en el payload")
             if sorted(ids) != list(range(1, 113)):
                 raise ValueError("IDs de secciones deben ser 1..112")
+        if self.block_ok("modo") and (self.modo is None or self.modo.modfunalu is None):
+            raise ValueError("bloque modo ok requiere modo.modfunalu")
+        if self.block_ok("fotocelula") and (
+            self.modo is None
+            or self.modo.fotocelula_entrada is None
+            or self.modo.fotocelula_mem_fun is None
+            or self.modo.fotocelula_mem_act is None
+        ):
+            raise ValueError("bloque fotocelula ok requiere campos de fotocelula en modo")
+        if self.block_ok("reloj") and self.plc_reloj is None:
+            raise ValueError("bloque reloj ok requiere plc_reloj")
+        if self.block_ok("diagnostico") and self.diagnostico is None:
+            raise ValueError("bloque diagnostico ok requiere diagnostico")
+        if self.block_ok("horarios"):
+            if self.horarios is None:
+                raise ValueError("bloque horarios ok requiere horarios")
+            if len(self.horarios.raw_words) < 24:
+                raise ValueError("bloque horarios ok requiere al menos 24 raw_words")
         return self
 
     def block_status(self, block: str) -> Optional[str]:

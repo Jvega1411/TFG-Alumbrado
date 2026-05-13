@@ -42,6 +42,8 @@ class CicloResponse(BaseModel):
 class SeccionEstadoResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
+    ciclo_id: int
+    timestamp: datetime
     seccion_id: int
     automatico: bool
     manual: bool
@@ -51,6 +53,8 @@ class SeccionEstadoResponse(BaseModel):
 class HorarioTramoResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
+    ciclo_id: int
+    timestamp: datetime
     tramo_id: int
     inicio_raw: Optional[int]
     fin_raw: Optional[int]

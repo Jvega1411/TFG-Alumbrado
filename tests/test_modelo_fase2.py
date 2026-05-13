@@ -120,7 +120,13 @@ class TestHorarioTramo:
             ciclo = Ciclo(timestamp=_ts(), fins_ok=True)
             s.add(ciclo)
             s.flush()
-            s.add(HorarioTramo(ciclo_id=ciclo.id, tramo_id=1, inicio_raw=800, fin_raw=2200))
+            s.add(HorarioTramo(
+                ciclo_id=ciclo.id,
+                timestamp=_ts(),
+                tramo_id=1,
+                inicio_raw=800,
+                fin_raw=2200,
+            ))
             s.commit()
             row = s.query(HorarioTramo).first()
             assert row.tramo_id == 1

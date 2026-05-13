@@ -157,6 +157,8 @@ def build_payload(ts: datetime, variables: dict) -> dict:
         for block, status in read_status.items()
         if status.get('status') != 'ok'
     ]
+    modo_ok = _block_ok(read_status, 'modo')
+    fotocelula_ok = _block_ok(read_status, 'fotocelula')
     return {
         'schema_version': 1,
         'ts': ts.isoformat(),
@@ -171,21 +173,25 @@ def build_payload(ts: datetime, variables: dict) -> dict:
             'mes': variables['plc_mes'],
             'anio': variables['plc_anio'],
             'diasem': variables['plc_diasem'],
-        },
+        } if _block_ok(read_status, 'reloj') else None,
         'modo': {
-            'modfunalu': variables['modfunalu'],
-            'fotocelula_entrada': variables['fotocelula_entrada'],
-            'fotocelula_mem_fun': variables['fotocelula_mem_fun'],
-            'fotocelula_mem_act': variables['fotocelula_mem_act'],
-        },
-        'secciones': variables['secciones'],
-        'horarios': {'raw_words': variables['horarios_raw']},
+            'modfunalu': variables['modfunalu'] if modo_ok else None,
+            'fotocelula_entrada': variables['fotocelula_entrada'] if fotocelula_ok else None,
+            'fotocelula_mem_fun': variables['fotocelula_mem_fun'] if fotocelula_ok else None,
+            'fotocelula_mem_act': variables['fotocelula_mem_act'] if fotocelula_ok else None,
+        } if modo_ok or fotocelula_ok else None,
+        'secciones': variables['secciones'] if _block_ok(read_status, 'secciones') else [],
+        'horarios': {'raw_words': variables['horarios_raw']} if _block_ok(read_status, 'horarios') else None,
         'diagnostico': {
             'cycle_time_error': variables['cycle_time_error'],
             'low_battery': variables['low_battery'],
             'io_verify_error': variables['io_verify_error'],
-        },
+        } if _block_ok(read_status, 'diagnostico') else None,
     }
+
+
+def _block_ok(read_status: dict, block: str) -> bool:
+    return read_status.get(block, {}).get('status') == 'ok'
 
 
 def build_error_payload(ts: datetime, error: str) -> dict:

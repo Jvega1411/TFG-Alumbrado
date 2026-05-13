@@ -308,7 +308,7 @@ async function showHorarios() {
         <tbody>
           ${rows.map((row, index) => `
             <tr>
-              <td class="mono">${escapeHtml(row?.id ?? row?.tramo ?? index + 1)}</td>
+              <td class="mono">${escapeHtml(row?.tramo_id ?? row?.id ?? row?.tramo ?? index + 1)}</td>
               <td class="mono">${escapeHtml(JSON.stringify(row))}</td>
               <td class="mono">${escapeHtml(getTimestamp(row))}</td>
             </tr>
