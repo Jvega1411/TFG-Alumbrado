@@ -83,6 +83,25 @@ function fieldValue(item, names) {
   return null;
 }
 
+function blockStatus(ciclo, block) {
+  if (!ciclo || typeof ciclo !== "object") return null;
+  return ciclo[`${block}_status`] ?? null;
+}
+
+function blockOk(ciclo, block) {
+  const status = blockStatus(ciclo, block);
+  if (status === null) return fieldValue(ciclo, ["fins_ok", "lectura_ok"]) === true;
+  return status === "ok";
+}
+
+function blockBadge(ciclo, block) {
+  const status = blockStatus(ciclo, block);
+  if (status === "ok") return badge("OK", "ok");
+  if (status === "failed") return badge("FALLO", "bad");
+  if (status === "absent") return badge("AUSENTE", "warn");
+  return badge("SIN ESTADO", "warn");
+}
+
 function badge(text, cls = "") {
   return `<span class="badge ${cls}">${escapeHtml(text)}</span>`;
 }
@@ -214,8 +233,10 @@ async function showResumen() {
   const horarioRows = asRows(horarios.data);
 
   const finsOk = fieldValue(estadoData, ["fins_ok", "lectura_ok"]);
-  const finsText = finsOk === true ? "OK" : finsOk === false ? "Fallo" : "PENDIENTE";
-  const finsClass = finsOk === true ? "ok" : finsOk === false ? "bad" : "warn";
+  const hasOkBlock = ["secciones", "horarios", "modo", "fotocelula", "reloj", "diagnostico"]
+    .some((name) => blockOk(estadoData, name));
+  const finsText = finsOk === true ? "OK" : hasOkBlock ? "PARCIAL" : finsOk === false ? "FALLO" : "PENDIENTE";
+  const finsClass = finsOk === true ? "ok" : hasOkBlock ? "warn" : finsOk === false ? "bad" : "warn";
   topStatus.innerHTML = estado.ok ? badge(finsText, finsClass) : endpointState(estado);
 
   view.innerHTML =
@@ -231,7 +252,12 @@ async function showResumen() {
       ${renderKeyValues([
         ["Timestamp", escapeHtml(getTimestamp(estadoData))],
         ["Error FINS", escapeHtml(fieldValue(estadoData, ["fins_error", "error_msg", "error"]) || "-")],
-        ["Diagnostico PLC", escapeHtml(JSON.stringify(estadoData?.diagnostico_plc ?? estadoData?.plc ?? null))],
+        ["Modo", blockBadge(estadoData, "modo")],
+        ["Fotocelula", blockBadge(estadoData, "fotocelula")],
+        ["Reloj PLC", blockBadge(estadoData, "reloj")],
+        ["Secciones", blockBadge(estadoData, "secciones")],
+        ["Horarios", blockBadge(estadoData, "horarios")],
+        ["Diagnostico", blockBadge(estadoData, "diagnostico")],
       ])}
     `) +
     renderPanel("Contrato API", "Solo endpoints GET read-only", `
