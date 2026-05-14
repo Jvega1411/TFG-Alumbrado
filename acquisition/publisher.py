@@ -34,7 +34,7 @@ def run_publisher(max_cycles: Optional[int] = None) -> None:
     """
     Config.validate_publisher()
 
-    mqtt_client = mqtt.Client(client_id=Config.MQTT_CLIENT_ID)
+    mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=Config.MQTT_CLIENT_ID)
     if Config.MQTT_USERNAME.strip():
         mqtt_client.username_pw_set(Config.MQTT_USERNAME, Config.MQTT_PASSWORD or None)
     mqtt_client.connect(Config.MQTT_BROKER_HOST, Config.MQTT_BROKER_PORT, keepalive=60)

@@ -114,7 +114,7 @@ def run_subscriber() -> None:
         with Session(engine) as session:
             process_message(message.payload, session)
 
-    mqtt_client = mqtt.Client()
+    mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
     if Config.MQTT_USERNAME.strip():
         mqtt_client.username_pw_set(Config.MQTT_USERNAME, Config.MQTT_PASSWORD or None)
     mqtt_client.on_message = on_message
