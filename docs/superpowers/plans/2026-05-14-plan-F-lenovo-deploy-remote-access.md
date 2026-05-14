@@ -2,7 +2,7 @@
 
 > **For agentic workers:** Este plan crea scripts ejecutables. Los pasos marcados **[MANUAL]** los ejecuta el operador sobre el hardware real. Usar superpowers:executing-plans para iterar tarea a tarea.
 
-**Goal:** Dejar el nodo IT (Lenovo) completamente operativo y accesible de forma remota: subscriber MQTT persistiendo en SQLite, FastAPI + dashboard activos, arranque automático al inicio de Windows y acceso remoto via RustDesk.
+**Goal:** Dejar el nodo IT (Lenovo) completamente operativo y accesible de forma remota: subscriber MQTT persistiendo en SQLite, FastAPI + dashboard activos, arranque automático al inicio de Windows y acceso remoto via AnyDesk.
 
 **Topología confirmada (2026-05-13):**
 ```
@@ -38,9 +38,11 @@
 | `scripts/node-config/lenovo-deploy.ps1` | Lenovo | Clonar repo, venv, instalar dependencias |
 | `scripts/node-config/lenovo-env-template.env` | Lenovo | Plantilla `.env` para nodo IT |
 | `scripts/node-config/lenovo-start.ps1` | Lenovo | Arrancar subscriber + API (modo dev/manual) |
+| `scripts/node-config/lenovo-task-runner.ps1` | Lenovo | Wrapper Task Scheduler con logs stdout/stderr |
 | `scripts/node-config/lenovo-register-startup.ps1` | Lenovo | Registrar tareas de arranque automático (Task Scheduler) |
 | `scripts/node-config/lenovo-firewall-api.ps1` | Lenovo | Regla Firewall para exponer API en red corporativa |
-| `scripts/node-config/lenovo-rustdesk.ps1` | Lenovo | Descargar e instalar RustDesk |
+| `scripts/node-config/lenovo-anydesk.ps1` | Lenovo | Descargar e instalar AnyDesk |
+| `scripts/node-config/alumbrado-publisher-dev.service` | RPi | Unidad systemd dev versionada para publisher |
 | `scripts/node-config/rpi-enable-publisher.sh` | RPi | Habilitar y arrancar publisher contra PLC real |
 | `scripts/node-config/verify-pipeline.ps1` | Lenovo | Verificación completa del pipeline end-to-end |
 
@@ -159,6 +161,12 @@ Get-ScheduledTask -TaskName "AlumbradoSubscriber" | Select-Object TaskName, Stat
 Get-ScheduledTask -TaskName "AlumbradoAPI" | Select-Object TaskName, State
 ```
 
+Las tareas ejecutan PowerShell y redirigen stdout/stderr a ficheros reales en `C:\alumbrado-gateway\logs\`:
+- `subscriber.log`
+- `subscriber-err.log`
+- `api.log`
+- `api-err.log`
+
 **Logs de las tareas** (en `C:\alumbrado-gateway\logs\`):
 ```powershell
 Get-Content "C:\alumbrado-gateway\logs\subscriber.log" -Tail 20
@@ -192,10 +200,11 @@ bash ~/dev/alumbrado-gateway/scripts/node-config/rpi-enable-publisher.sh
 ```
 
 El script:
-1. Elimina la regla UFW temporal de SSH desde `192.168.250.200`
+1. Elimina la regla UFW temporal de SSH desde `192.168.250.200` solo si encuentra una unica regla candidata `22/tcp ALLOW IN`; si hay cero hace skip y si hay varias aborta
 2. Valida conectividad al PLC (`ping -c 3 192.168.250.1`)
 3. Ejecuta `run_publisher(max_cycles=1)` manual y muestra el payload
-4. Si el payload tiene al menos un bloque `status=ok`, habilita y arranca el servicio
+4. Pide confirmacion manual si el payload tiene al menos un bloque `status=ok`
+5. Instala la unidad versionada y arranca `alumbrado-publisher-dev.service`
 
 ---
 
@@ -233,10 +242,10 @@ Comprueba en orden:
 2. Subscriber activo (proceso Python corriendo)
 3. API activa (responde HTTP)
 4. BD con datos (al menos 1 ciclo en `ciclo`)
-5. Conectividad RustDesk activa
+5. Conectividad AnyDesk activa
 
 **Estado final esperado:**
 ```
 [RPi] publisher → MQTT → [Lenovo] subscriber → SQLite → FastAPI → dashboard
-                                  ↑ RustDesk (acceso remoto)
+                                  ↑ AnyDesk (acceso remoto)
 ```

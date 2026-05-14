@@ -1,3 +1,5 @@
+import os
+
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
@@ -9,10 +11,10 @@ target_metadata = Base.metadata
 
 
 def _database_url() -> str:
-    configured = context.config.get_main_option("sqlalchemy.url")
-    if configured:
-        return configured
-    return Config.DB_ESTADOS_URL
+    configured = os.getenv("DB_ESTADOS_URL", Config.DB_ESTADOS_URL).strip()
+    if not configured:
+        raise RuntimeError("DB_ESTADOS_URL no puede estar vacia para Alembic")
+    return configured
 
 
 def run_migrations_offline() -> None:

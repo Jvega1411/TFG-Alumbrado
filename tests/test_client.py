@@ -42,7 +42,20 @@ class TestFINSClientConnect:
         mock_socket_instance = Mock()
         mock_socket_class.return_value = mock_socket_instance
         FINSClient().connect()
-        mock_socket_instance.bind.assert_called_once_with(("", Config.UDP_LOCAL_PORT))
+        mock_socket_instance.bind.assert_called_once_with((Config.UDP_LOCAL_HOST, Config.UDP_LOCAL_PORT))
+
+    @patch("fins.client.socket.socket")
+    def test_connect_can_bind_to_configured_local_host(self, mock_socket_class):
+        mock_socket_instance = Mock()
+        mock_socket_class.return_value = mock_socket_instance
+        config = Mock()
+        config.UDP_TIMEOUT = Config.UDP_TIMEOUT
+        config.UDP_LOCAL_HOST = "192.168.250.220"
+        config.UDP_LOCAL_PORT = Config.UDP_LOCAL_PORT
+
+        FINSClient(config=config).connect()
+
+        mock_socket_instance.bind.assert_called_once_with(("192.168.250.220", Config.UDP_LOCAL_PORT))
 
     @patch("fins.client.socket.socket")
     def test_connect_closes_existing_socket(self, mock_socket_class):

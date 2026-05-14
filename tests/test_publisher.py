@@ -288,8 +288,9 @@ class TestRunPublisher:
             run_publisher(max_cycles=1)
 
         mock_mqtt.username_pw_set.assert_called_once_with('gwpub', 'test-password')
+        connect_call = next(c for c in mock_mqtt.method_calls if c[0] == 'connect')
         assert mock_mqtt.method_calls.index(call.username_pw_set('gwpub', 'test-password')) < \
-            mock_mqtt.method_calls.index(call.connect('', 1883, keepalive=60))
+            mock_mqtt.method_calls.index(connect_call)
 
     def test_does_not_set_mqtt_credentials_when_username_empty(self):
         mock_mqtt = Mock()

@@ -1,3 +1,4 @@
+import os
 import pytest
 from unittest.mock import patch
 from config.settings import Config
@@ -30,6 +31,7 @@ class TestConfigValidation:
     def test_config_defaults_on_import(self):
         assert Config.PLC_IP == '192.168.250.1'
         assert Config.PLC_PORT == 9600
+        assert Config.UDP_LOCAL_HOST == ''
         assert Config.UDP_LOCAL_PORT == 9600
         assert Config.UDP_TIMEOUT == 2.0
 
@@ -63,6 +65,7 @@ class TestConfigValidation:
 
 class TestMqttDefaults:
 
+    @pytest.mark.skipif(bool(os.getenv('MQTT_BROKER_HOST')), reason="env overrides default")
     def test_mqtt_broker_host_default_is_empty(self):
         assert Config.MQTT_BROKER_HOST == ''
 
@@ -87,6 +90,7 @@ class TestMqttDefaults:
     def test_acquisition_interval_default_is_10(self):
         assert Config.ACQUISITION_INTERVAL_S == 10.0
 
+    @pytest.mark.skipif(bool(os.getenv('API_HOST')), reason="env overrides default")
     def test_api_host_default_is_localhost(self):
         assert Config.API_HOST == '127.0.0.1'
 
@@ -100,26 +104,59 @@ class TestMqttDefaults:
 class TestValidatePublisher:
 
     def test_validate_publisher_fails_if_mqtt_broker_host_empty(self):
-        with patch.object(Config, 'MQTT_BROKER_HOST', ''):
+        with patch.object(Config, 'FINS_SOURCE_NODE', 220), \
+             patch.object(Config, 'FINS_DEST_NODE', 1), \
+             patch.object(Config, 'UDP_LOCAL_HOST', '192.168.250.220'), \
+             patch.object(Config, 'MQTT_BROKER_HOST', ''):
             with pytest.raises(ValueError, match='MQTT_BROKER_HOST'):
                 Config.validate_publisher()
 
     def test_validate_publisher_passes_with_broker_host(self):
-        with patch.object(Config, 'MQTT_BROKER_HOST', '10.0.0.1'):
+        with patch.object(Config, 'FINS_SOURCE_NODE', 220), \
+             patch.object(Config, 'FINS_DEST_NODE', 1), \
+             patch.object(Config, 'UDP_LOCAL_HOST', '192.168.250.220'), \
+             patch.object(Config, 'MQTT_BROKER_HOST', '10.0.0.1'):
             Config.validate_publisher()  # must not raise
 
     def test_validate_publisher_allows_empty_mqtt_auth(self):
-        with patch.object(Config, 'MQTT_BROKER_HOST', '10.0.0.1'), \
+        with patch.object(Config, 'FINS_SOURCE_NODE', 220), \
+             patch.object(Config, 'FINS_DEST_NODE', 1), \
+             patch.object(Config, 'UDP_LOCAL_HOST', '192.168.250.220'), \
+             patch.object(Config, 'MQTT_BROKER_HOST', '10.0.0.1'), \
              patch.object(Config, 'MQTT_USERNAME', ''), \
              patch.object(Config, 'MQTT_PASSWORD', ''):
             Config.validate_publisher()
 
     def test_validate_publisher_rejects_password_without_username(self):
-        with patch.object(Config, 'MQTT_BROKER_HOST', '10.0.0.1'), \
+        with patch.object(Config, 'FINS_SOURCE_NODE', 220), \
+             patch.object(Config, 'FINS_DEST_NODE', 1), \
+             patch.object(Config, 'UDP_LOCAL_HOST', '192.168.250.220'), \
+             patch.object(Config, 'MQTT_BROKER_HOST', '10.0.0.1'), \
              patch.object(Config, 'MQTT_USERNAME', ''), \
              patch.object(Config, 'MQTT_PASSWORD', 'secret'):
             with pytest.raises(ValueError, match='MQTT_USERNAME'):
                 Config.validate_publisher()
+
+    def test_validate_publisher_requires_local_host(self):
+        with patch.object(Config, 'FINS_SOURCE_NODE', 220), \
+             patch.object(Config, 'FINS_DEST_NODE', 1), \
+             patch.object(Config, 'UDP_LOCAL_HOST', ''), \
+             patch.object(Config, 'MQTT_BROKER_HOST', '10.0.0.1'):
+            with pytest.raises(ValueError, match='UDP_LOCAL_HOST'):
+                Config.validate_publisher()
+
+    def test_validate_publisher_requires_fins_source_node(self):
+        with patch.object(Config, 'FINS_SOURCE_NODE', 0), \
+             patch.object(Config, 'FINS_DEST_NODE', 1), \
+             patch.object(Config, 'UDP_LOCAL_HOST', '192.168.250.220'), \
+             patch.object(Config, 'MQTT_BROKER_HOST', '10.0.0.1'):
+            with pytest.raises(ValueError, match='FINS_SOURCE_NODE'):
+                Config.validate_publisher()
+
+    def test_validate_rejects_local_host_with_outer_whitespace(self):
+        with patch.object(Config, 'UDP_LOCAL_HOST', ' 192.168.250.220 '):
+            with pytest.raises(ValueError, match='UDP_LOCAL_HOST'):
+                Config.validate()
 
 
 class TestValidateApi:

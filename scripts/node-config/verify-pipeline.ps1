@@ -1,62 +1,118 @@
-# verify-pipeline.ps1 — Verificacion completa del pipeline end-to-end desde Lenovo
-# Ejecutar en cualquier momento para diagnosticar el estado del sistema.
+# verify-pipeline.ps1 - Verificacion completa del pipeline end-to-end desde Lenovo.
+# Ejecutar manualmente en Lenovo. No modifica red, firewall, servicios ni BD.
 
-$root = "C:\alumbrado-gateway"
-$ok   = $true
+param(
+    [string]$Root = "C:\alumbrado-gateway",
+    [string]$MqttHost = "10.0.0.2",
+    [int]$MqttPort = 1883,
+    [string]$ApiUrl = "http://127.0.0.1:8000/",
+    [string]$RpiHost = "10.0.0.1",
+    [switch]$SkipNetwork
+)
 
-function Check { param([string]$label, [scriptblock]$test)
+$ErrorActionPreference = "Stop"
+$ok = $true
+$python = Join-Path $Root ".venv\Scripts\python.exe"
+$db = Join-Path $Root "data\bd_estados.db"
+
+function Check {
+    param([string]$Label, [scriptblock]$Test)
     try {
-        $result = & $test
-        if ($result) { Write-Host "OK  $label" }
-        else         { Write-Host "FAIL $label"; $script:ok = $false }
+        $result = & $Test
+        if ($result) { Write-Host "OK   $Label" }
+        else         { Write-Host "FAIL $Label"; $script:ok = $false }
     } catch {
-        Write-Host "ERR $label — $_"
+        Write-Host "ERR  $Label - $($_.Exception.Message)"
         $script:ok = $false
     }
 }
 
-Write-Host "=== Pipeline alumbrado — $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ===`n"
-
-Check "Mosquitto Running" {
-    (Get-Service mosquitto -ErrorAction Stop).Status -eq "Running"
+function Get-AlumbradoPythonProcess {
+    param([string]$Pattern)
+    Get-CimInstance Win32_Process -Filter "name = 'python.exe' or name = 'pythonw.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -and $_.CommandLine -like "*$Pattern*" }
 }
 
-Check "Mosquitto escucha en 10.0.0.2:1883" {
-    netstat -ano | Select-String "10.0.0.2:1883.*LISTENING"
+function Test-TcpListen {
+    param([string]$Address, [int]$Port)
+    if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
+        return [bool](Get-NetTCPConnection -LocalAddress $Address -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
+    }
+    return [bool](netstat -ano | Select-String ([regex]::Escape("$Address`:$Port")) | Select-String "LISTEN")
+}
+
+Write-Host "=== Pipeline alumbrado - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ==="
+Write-Host "Root: $Root"
+Write-Host ""
+
+Check "Directorio de despliegue existe" {
+    Test-Path -LiteralPath $Root -PathType Container
+}
+
+Check "Python venv existe" {
+    Test-Path -LiteralPath $python -PathType Leaf
+}
+
+Check "Mosquitto Running" {
+    $svc = Get-Service mosquitto -ErrorAction Stop
+    $svc.Status -eq "Running"
+}
+
+Check "Mosquitto escucha en ${MqttHost}:${MqttPort}" {
+    Test-TcpListen -Address $MqttHost -Port $MqttPort
 }
 
 Check "Subscriber Python activo" {
-    $procs = Get-Process python -ErrorAction SilentlyContinue
-    ($procs | Where-Object { $_.CommandLine -like "*subscriber*" }).Count -gt 0
+    [bool](Get-AlumbradoPythonProcess -Pattern "subscriber.listener")
 }
 
 Check "API Python activa" {
-    $procs = Get-Process python -ErrorAction SilentlyContinue
-    ($procs | Where-Object { $_.CommandLine -like "*main.py*" }).Count -gt 0
+    [bool](Get-AlumbradoPythonProcess -Pattern "main.py")
+}
+
+Check "Tarea AlumbradoSubscriber registrada" {
+    [bool](Get-ScheduledTask -TaskName "AlumbradoSubscriber" -ErrorAction SilentlyContinue)
+}
+
+Check "Tarea AlumbradoAPI registrada" {
+    [bool](Get-ScheduledTask -TaskName "AlumbradoAPI" -ErrorAction SilentlyContinue)
 }
 
 Check "API responde HTTP" {
-    $r = Invoke-WebRequest -Uri "http://127.0.0.1:8000/" -UseBasicParsing -TimeoutSec 5
+    $r = Invoke-WebRequest -Uri $ApiUrl -UseBasicParsing -TimeoutSec 5
     $r.StatusCode -eq 200
 }
 
 Check "BD SQLite existe" {
-    Test-Path "$root\data\bd_estados.db"
+    Test-Path -LiteralPath $db -PathType Leaf
 }
 
 Check "BD tiene al menos 1 ciclo" {
-    $db = "$root\data\bd_estados.db"
-    $count = (& "$root\.venv\Scripts\python.exe" -c @"
+    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { return $false }
+    if (-not (Test-Path -LiteralPath $db -PathType Leaf)) { return $false }
+    $code = @"
 import sqlite3
-c = sqlite3.connect(r'$db').cursor()
-c.execute('SELECT COUNT(*) FROM ciclo')
-print(c.fetchone()[0])
-"@).Trim()
+db = r'''$db'''
+conn = sqlite3.connect(db)
+try:
+    cur = conn.execute("SELECT COUNT(*) FROM ciclo")
+    print(cur.fetchone()[0])
+finally:
+    conn.close()
+"@
+    $count = (& $python -c $code).Trim()
     [int]$count -gt 0
 }
 
-Check "Enlace RPi (10.0.0.1) responde ping" {
-    (Test-NetConnection -ComputerName 10.0.0.1 -WarningAction SilentlyContinue).PingSucceeded
+if ($SkipNetwork) {
+    Write-Host "SKIP Enlace RPi ($RpiHost) responde ping - SkipNetwork activo"
+} else {
+    Check "Enlace RPi ($RpiHost) responde ping" {
+        if (Get-Command Test-NetConnection -ErrorAction SilentlyContinue) {
+            return (Test-NetConnection -ComputerName $RpiHost -InformationLevel Quiet -WarningAction SilentlyContinue)
+        }
+        return (ping -n 1 -w 2000 $RpiHost | Select-String "TTL=")
+    }
 }
 
 Check "AnyDesk servicio activo" {
@@ -65,5 +121,10 @@ Check "AnyDesk servicio activo" {
 }
 
 Write-Host ""
-if ($ok) { Write-Host "PIPELINE OK — todos los checks superados." }
-else      { Write-Host "PIPELINE DEGRADADO — revisar los items marcados FAIL/ERR." }
+if ($ok) {
+    Write-Host "PIPELINE OK - todos los checks superados."
+    exit 0
+}
+
+Write-Host "PIPELINE DEGRADADO - revisar los items marcados FAIL/ERR."
+exit 1

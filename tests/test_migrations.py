@@ -8,16 +8,17 @@ from sqlalchemy import create_engine, inspect, text
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _config(db_url: str) -> AlembicConfig:
+def _config() -> AlembicConfig:
     cfg = AlembicConfig(str(PROJECT_ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(PROJECT_ROOT / "alembic"))
-    cfg.set_main_option("sqlalchemy.url", db_url)
+    cfg.set_main_option("sqlalchemy.url", "ALEMBIC_INI_URL_MUST_NOT_BE_USED")
     return cfg
 
 
-def test_alembic_upgrade_creates_fase2_schema(tmp_path):
+def test_alembic_upgrade_uses_db_estados_url(tmp_path, monkeypatch):
     db_path = tmp_path / "fresh.db"
-    command.upgrade(_config(f"sqlite:///{db_path.as_posix()}"), "head")
+    monkeypatch.setenv("DB_ESTADOS_URL", f"sqlite:///{db_path.as_posix()}")
+    command.upgrade(_config(), "head")
 
     engine = create_engine(f"sqlite:///{db_path.as_posix()}")
     inspector = inspect(engine)
@@ -25,7 +26,7 @@ def test_alembic_upgrade_creates_fase2_schema(tmp_path):
     assert "timestamp" in {col["name"] for col in inspector.get_columns("horario_tramo")}
 
 
-def test_alembic_upgrade_adds_horario_timestamp_to_existing_schema(tmp_path):
+def test_alembic_upgrade_adds_horario_timestamp_to_existing_schema(tmp_path, monkeypatch):
     db_path = tmp_path / "existing.db"
     engine = create_engine(f"sqlite:///{db_path.as_posix()}")
     with engine.begin() as conn:
@@ -72,7 +73,8 @@ def test_alembic_upgrade_adds_horario_timestamp_to_existing_schema(tmp_path):
             )
         )
 
-    command.upgrade(_config(f"sqlite:///{db_path.as_posix()}"), "head")
+    monkeypatch.setenv("DB_ESTADOS_URL", f"sqlite:///{db_path.as_posix()}")
+    command.upgrade(_config(), "head")
 
     inspector = inspect(engine)
     columns = {col["name"]: col for col in inspector.get_columns("horario_tramo")}

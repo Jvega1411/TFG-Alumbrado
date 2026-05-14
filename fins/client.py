@@ -18,7 +18,7 @@ class FINSClient:
             self.close()
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.settimeout(self.config.UDP_TIMEOUT)
-        self.socket.bind(("", self.config.UDP_LOCAL_PORT))
+        self.socket.bind((self.config.UDP_LOCAL_HOST, self.config.UDP_LOCAL_PORT))
 
     def close(self) -> None:
         if self.socket is not None:

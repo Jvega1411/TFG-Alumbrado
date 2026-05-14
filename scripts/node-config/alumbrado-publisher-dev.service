@@ -1,0 +1,21 @@
+# Copy to /etc/systemd/system/alumbrado-publisher-dev.service on the RPi.
+# Dev unit only. Production must use gwsvc and /opt/alumbrado-gateway.
+[Unit]
+Description=Alumbrado FINS/MQTT Publisher (dev)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=master
+WorkingDirectory=/home/master/dev/alumbrado-gateway
+ExecStart=/home/master/dev/alumbrado-gateway/.venv/bin/python -m acquisition.publisher
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=alumbrado-publisher-dev
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

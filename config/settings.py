@@ -13,19 +13,27 @@ def _parse_int(value: str) -> int:
     return int(value, 10)
 
 
+def _parse_int_env(name: str, default: str) -> int:
+    value = os.getenv(name)
+    if value is None or value.strip() == "":
+        value = default
+    return _parse_int(value)
+
+
 class Config:
     # PLC
     PLC_IP: str = os.getenv('PLC_IP', '192.168.250.1')
     PLC_PORT: int = int(os.getenv('PLC_PORT', '9600'))
+    UDP_LOCAL_HOST: str = os.getenv('UDP_LOCAL_HOST', '')
     UDP_LOCAL_PORT: int = int(os.getenv('UDP_LOCAL_PORT', '9600'))
 
     # FINS — soporta decimal o prefijo 0x
-    FINS_SOURCE_NETWORK: int = _parse_int(os.getenv('FINS_SOURCE_NETWORK', '0'))
-    FINS_SOURCE_NODE: int    = _parse_int(os.getenv('FINS_SOURCE_NODE',    '0'))
-    FINS_SOURCE_UNIT: int    = _parse_int(os.getenv('FINS_SOURCE_UNIT',    '0'))
-    FINS_DEST_NETWORK: int   = _parse_int(os.getenv('FINS_DEST_NETWORK',   '0'))
-    FINS_DEST_NODE: int      = _parse_int(os.getenv('FINS_DEST_NODE',      '0'))
-    FINS_DEST_UNIT: int      = _parse_int(os.getenv('FINS_DEST_UNIT',      '0'))
+    FINS_SOURCE_NETWORK: int = _parse_int_env('FINS_SOURCE_NETWORK', '0')
+    FINS_SOURCE_NODE: int    = _parse_int_env('FINS_SOURCE_NODE',    '0')
+    FINS_SOURCE_UNIT: int    = _parse_int_env('FINS_SOURCE_UNIT',    '0')
+    FINS_DEST_NETWORK: int   = _parse_int_env('FINS_DEST_NETWORK',   '0')
+    FINS_DEST_NODE: int      = _parse_int_env('FINS_DEST_NODE',      '0')
+    FINS_DEST_UNIT: int      = _parse_int_env('FINS_DEST_UNIT',      '0')
 
     UDP_TIMEOUT: float = float(os.getenv('UDP_TIMEOUT', '2.0'))
 
@@ -73,6 +81,10 @@ class Config:
     def _parse_int(value: str) -> int:
         return _parse_int(value)
 
+    @staticmethod
+    def _parse_int_env(name: str, default: str) -> int:
+        return _parse_int_env(name, default)
+
     @classmethod
     def validate(cls) -> None:
         for attr in [
@@ -88,6 +100,10 @@ class Config:
             raise ValueError(f"PLC_PORT fuera de rango: {cls.PLC_PORT}")
         if not (1 <= cls.UDP_LOCAL_PORT <= 65535):
             raise ValueError(f"UDP_LOCAL_PORT fuera de rango: {cls.UDP_LOCAL_PORT}")
+        if cls.UDP_LOCAL_HOST.strip() in {'0.0.0.0', '::'}:
+            raise ValueError("UDP_LOCAL_HOST no debe abrir FINS en todas las interfaces")
+        if cls.UDP_LOCAL_HOST != cls.UDP_LOCAL_HOST.strip():
+            raise ValueError("UDP_LOCAL_HOST no puede tener espacios al inicio o final")
         if cls.ACQUISITION_INTERVAL_S <= 0:
             raise ValueError(f"ACQUISITION_INTERVAL_S debe ser positivo: {cls.ACQUISITION_INTERVAL_S}")
         if not (1 <= cls.DB_PORT <= 65535):
@@ -124,6 +140,12 @@ class Config:
     @classmethod
     def validate_publisher(cls) -> None:
         cls.validate()
+        if not cls.UDP_LOCAL_HOST.strip():
+            raise ValueError("UDP_LOCAL_HOST debe configurarse explicitamente para el publisher")
+        if cls.FINS_SOURCE_NODE == 0:
+            raise ValueError("FINS_SOURCE_NODE debe configurarse explicitamente para el publisher")
+        if cls.FINS_DEST_NODE == 0:
+            raise ValueError("FINS_DEST_NODE debe configurarse explicitamente para el publisher")
         cls._validate_mqtt()
 
     @classmethod
