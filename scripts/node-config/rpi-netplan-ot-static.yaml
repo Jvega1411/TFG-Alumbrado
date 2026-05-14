@@ -1,0 +1,13 @@
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    eth0:
+      dhcp4: false
+      addresses:
+        - 192.168.250.220/24
+      # Sin gateway: la red OT es aislada. El default route va por wlan0 o enx6083e7ac98fb.
+      # Sin DNS: no hay servidor DNS en la red OT del PLC.
+      routes: []
+      nameservers:
+        addresses: []
