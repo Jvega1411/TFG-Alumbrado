@@ -199,27 +199,27 @@ El script:
 
 ---
 
-## Task 8: Instalar RustDesk (acceso remoto al Lenovo)
+## Task 8: Instalar AnyDesk (acceso remoto al Lenovo)
 
-**Por qué RustDesk sobre VNC:**
-- VNC requiere puerto 5900 abierto en el firewall y gestión de IP dinámica
-- RustDesk usa relay cifrado (o directo en LAN) sin port forwarding
-- Free y open-source, sin licencias, funciona en Windows 11 Home
-- Un ID permanente + contraseña, igual de simple que Supremo
+**Por qué AnyDesk:**
+- Recomendado por el departamento → IT lo conoce y no lo bloquea
+- Gratuito para uso personal / no comercial (TFG incluido)
+- Sin port forwarding, funciona en Windows 11 Home
+- ID permanente + contraseña de acceso desatendido, igual de simple que Supremo
 
-**[MANUAL] Ejecutar `scripts/node-config/lenovo-rustdesk.ps1` como administrador.**
+**[MANUAL] Ejecutar `scripts/node-config/lenovo-anydesk.ps1` como administrador.**
 
-El script descarga el instalador desde GitHub Releases e inicia la instalación.
+El script descarga el instalador desde `download.anydesk.com` (URL estable, siempre última versión) y lo instala en silencio. Al finalizar imprime el ID asignado.
 
 **[MANUAL] Post-instalación:**
-1. Abrir RustDesk en el Lenovo
-2. Ir a `···` → `Seguridad` → `Establecer contraseña permanente`
-3. Anotar el **ID** (ej. `123 456 789`) y la **contraseña**
-4. Compartir ID + contraseña con quien necesite acceso remoto
-5. Instalar cliente RustDesk en el equipo remoto (gratuito) y conectar con ese ID
+1. Abrir AnyDesk desde el escritorio
+2. Ir a `Ajustes` → `Seguridad` → `Habilitar acceso no supervisado`
+3. Establecer una **contraseña de acceso desatendido**
+4. Anotar el **ID** (visible en la pantalla principal, ej. `123 456 789`) y la contraseña
+5. Descargar el cliente AnyDesk en el equipo remoto (gratuito) y conectar con ese ID
 
 **Verificación:**
-- Desde otro equipo: abrir RustDesk, introducir el ID del Lenovo, conectar
+- Desde otro equipo: abrir AnyDesk, introducir el ID del Lenovo, conectar
 - Verificar que el dashboard en `http://127.0.0.1:8000` es visible desde esa sesión remota
 
 ---

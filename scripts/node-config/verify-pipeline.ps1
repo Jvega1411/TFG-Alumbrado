@@ -59,8 +59,8 @@ Check "Enlace RPi (10.0.0.1) responde ping" {
     (Test-NetConnection -ComputerName 10.0.0.1 -WarningAction SilentlyContinue).PingSucceeded
 }
 
-Check "RustDesk servicio activo" {
-    $svc = Get-Service -Name "RustDesk" -ErrorAction SilentlyContinue
+Check "AnyDesk servicio activo" {
+    $svc = Get-Service -Name "AnyDesk" -ErrorAction SilentlyContinue
     $svc -and $svc.Status -eq "Running"
 }
 
