@@ -24,7 +24,11 @@ function Register-AlumbradoTask {
 
     $taskArgs = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -Role {1}' -f $runner, $Role
     $action = New-ScheduledTaskAction -Execute $ps -Argument $taskArgs -WorkingDirectory $WorkDir
-    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
+    $trigger = New-ScheduledTaskTrigger -AtLogOn
+    $principal = New-ScheduledTaskPrincipal `
+        -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) `
+        -LogonType Interactive `
+        -RunLevel Highest
     $settings = New-ScheduledTaskSettingsSet `
         -ExecutionTimeLimit (New-TimeSpan -Hours 0) `
         -RestartCount 3 `
@@ -35,8 +39,8 @@ function Register-AlumbradoTask {
         -TaskName $TaskName `
         -Action $action `
         -Trigger $trigger `
+        -Principal $principal `
         -Settings $settings `
-        -RunLevel Highest `
         -Force | Out-Null
 
     Write-Host "OK  Tarea '$TaskName' registrada."

@@ -92,13 +92,10 @@ Check "BD tiene al menos 1 ciclo" {
     if (-not (Test-Path -LiteralPath $db -PathType Leaf)) { return $false }
     $code = @"
 import sqlite3
-db = r'''$db'''
-conn = sqlite3.connect(db)
-try:
-    cur = conn.execute("SELECT COUNT(*) FROM ciclo")
-    print(cur.fetchone()[0])
-finally:
-    conn.close()
+conn = sqlite3.connect(r'$db')
+cur = conn.execute('SELECT COUNT(*) FROM ciclo')
+print(cur.fetchone()[0])
+conn.close()
 "@
     $count = (& $python -c $code).Trim()
     [int]$count -gt 0
