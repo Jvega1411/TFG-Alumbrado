@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Dict, Optional
 
 from pydantic import BaseModel, ConfigDict
 
@@ -68,3 +68,60 @@ class SeccionHistorialResponse(BaseModel):
     automatico: bool
     manual: bool
     horario_activo: bool
+
+
+class DashboardCapabilitiesResponse(BaseModel):
+    mode: str
+    can_write: bool
+    write_mode_available: bool
+    auth_required_for_write: bool
+
+
+class DashboardBlockStatusResponse(BaseModel):
+    status: Optional[str] = None
+    error: Optional[str] = None
+
+
+class DashboardSectionCountersResponse(BaseModel):
+    total: int
+    con_dato: int
+    automatico: int
+    manual: int
+    horario_activo: int
+    apagadas: int
+
+
+class DashboardPlcRelojResponse(BaseModel):
+    seg: Optional[int] = None
+    min: Optional[int] = None
+    hora: Optional[int] = None
+    dia: Optional[int] = None
+    mes: Optional[int] = None
+    anio: Optional[int] = None
+    diasem: Optional[int] = None
+
+
+class DashboardDiagnosticFlagsResponse(BaseModel):
+    cycle_time_error: Optional[bool] = None
+    low_battery: Optional[bool] = None
+    io_verify_error: Optional[bool] = None
+
+
+class DashboardFreshnessResponse(BaseModel):
+    generated_at: datetime
+    timestamp_rpi: Optional[datetime] = None
+    age_seconds: Optional[int] = None
+    stale_after_seconds: int
+    is_stale: bool
+
+
+class DashboardResumenResponse(BaseModel):
+    timestamp_rpi: Optional[datetime] = None
+    plc_reloj: Optional[DashboardPlcRelojResponse] = None
+    fins_ok: bool
+    fins_error: Optional[str] = None
+    bloques: Dict[str, DashboardBlockStatusResponse]
+    secciones: DashboardSectionCountersResponse
+    diagnostico: DashboardDiagnosticFlagsResponse
+    frescura: DashboardFreshnessResponse
+    capabilities: DashboardCapabilitiesResponse

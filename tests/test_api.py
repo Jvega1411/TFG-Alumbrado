@@ -120,6 +120,75 @@ class TestGetEstado:
         assert resp.status_code == 404
 
 
+class TestGetDashboardResumen:
+    def test_returns_capabilities_readonly(self, api_client):
+        data = api_client.get("/api/dashboard/resumen").json()
+
+        assert data["capabilities"] == {
+            "mode": "readonly",
+            "can_write": False,
+            "write_mode_available": False,
+            "auth_required_for_write": True,
+        }
+
+    def test_counts_all_false_sections_as_apagadas(self, api_client):
+        data = api_client.get("/api/dashboard/resumen").json()
+
+        assert data["secciones"]["total"] == 112
+        assert data["secciones"]["con_dato"] == 112
+        assert data["secciones"]["automatico"] == 1
+        assert data["secciones"]["manual"] == 0
+        assert data["secciones"]["horario_activo"] == 0
+        assert data["secciones"]["apagadas"] == 111
+
+    def test_reports_block_statuses_and_reloj(self, api_client):
+        data = api_client.get("/api/dashboard/resumen").json()
+
+        assert data["bloques"]["secciones"]["status"] == "ok"
+        assert data["bloques"]["diagnostico"]["status"] == "ok"
+        assert data["plc_reloj"]["hora"] == 8
+        assert data["frescura"]["stale_after_seconds"] == 30
+
+    def test_returns_latest_partial_cycle_with_valid_sections(self, populated_engine):
+        client = _make_client(populated_engine)
+        with Session(populated_engine) as session:
+            ciclo_parcial = Ciclo(
+                timestamp=_utc_dt(hour=9),
+                fins_ok=False,
+                fins_error="diagnostico: timeout",
+                secciones_status="ok",
+                diagnostico_status="failed",
+                diagnostico_error="timeout",
+            )
+            session.add(ciclo_parcial)
+            session.flush()
+            for i in range(112):
+                session.add(
+                    SeccionEstado(
+                        ciclo_id=ciclo_parcial.id,
+                        timestamp=_utc_dt(hour=9),
+                        seccion_id=i + 1,
+                        automatico=False,
+                        manual=i == 0,
+                        horario_activo=False,
+                    )
+                )
+            session.commit()
+
+        data = client.get("/api/dashboard/resumen").json()
+
+        assert data["fins_ok"] is False
+        assert data["bloques"]["diagnostico"]["status"] == "failed"
+        assert data["secciones"]["manual"] == 1
+        assert data["secciones"]["apagadas"] == 111
+
+    def test_returns_404_when_empty(self, test_engine):
+        client = _make_client(test_engine)
+        resp = client.get("/api/dashboard/resumen")
+
+        assert resp.status_code == 404
+
+
 class TestGetSeccionesActual:
     def test_returns_200(self, api_client):
         resp = api_client.get("/api/secciones/actual")
@@ -402,3 +471,19 @@ class TestUltimoCicloValido:
         assert resp.status_code == 200
         data = resp.json()
         assert data[0]["inicio_raw"] == 100
+
+
+class TestReadOnlyApi:
+    def test_api_routes_do_not_expose_write_methods(self):
+        from main import app
+
+        write_methods = {"POST", "PUT", "PATCH", "DELETE"}
+        api_routes = [
+            route
+            for route in app.routes
+            if getattr(route, "path", "").startswith("/api/")
+        ]
+
+        assert api_routes
+        for route in api_routes:
+            assert not (set(route.methods or set()) & write_methods), route.path

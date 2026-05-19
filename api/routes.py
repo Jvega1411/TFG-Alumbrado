@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from model.fase2 import Ciclo, HorarioTramo, SeccionEstado
 from schemas.lectura import (
     CicloResponse,
+    DashboardResumenResponse,
     HorarioTramoResponse,
     SeccionEstadoResponse,
     SeccionHistorialResponse,
@@ -15,6 +16,10 @@ from schemas.lectura import (
 _engine = None
 
 router = APIRouter()
+
+READ_BLOCKS = ("secciones", "modo", "fotocelula", "reloj", "horarios", "diagnostico")
+SECTION_COUNT = 112
+STALE_AFTER_SECONDS = 30
 
 
 def init_engine(engine) -> None:
@@ -30,12 +35,117 @@ def get_db():
         yield session
 
 
-@router.get("/api/estado", response_model=CicloResponse)
-def get_estado(db: Session = Depends(get_db)):
+def _latest_ciclo(db: Session) -> Ciclo:
     ciclo = db.query(Ciclo).order_by(Ciclo.timestamp.desc(), Ciclo.id.desc()).first()
     if ciclo is None:
         raise HTTPException(status_code=404, detail="Sin datos")
     return ciclo
+
+
+def _latest_valid_secciones(db: Session) -> List[SeccionEstado]:
+    ultimo_id = (
+        db.query(Ciclo.id)
+        .join(SeccionEstado, SeccionEstado.ciclo_id == Ciclo.id)
+        .filter(Ciclo.secciones_status == "ok")
+        .order_by(Ciclo.timestamp.desc(), Ciclo.id.desc())
+        .limit(1)
+        .scalar()
+    )
+    if ultimo_id is None:
+        return []
+    return (
+        db.query(SeccionEstado)
+        .filter(SeccionEstado.ciclo_id == ultimo_id)
+        .order_by(SeccionEstado.seccion_id)
+        .all()
+    )
+
+
+def _age_seconds(timestamp: Optional[datetime], now: datetime) -> Optional[int]:
+    if timestamp is None:
+        return None
+    ts = timestamp if timestamp.tzinfo is not None else timestamp.replace(tzinfo=timezone.utc)
+    return max(0, int((now - ts.astimezone(timezone.utc)).total_seconds()))
+
+
+def _plc_reloj(ciclo: Ciclo) -> Optional[dict]:
+    values = {
+        "seg": ciclo.plc_seg,
+        "min": ciclo.plc_min,
+        "hora": ciclo.plc_hora,
+        "dia": ciclo.plc_dia,
+        "mes": ciclo.plc_mes,
+        "anio": ciclo.plc_anio,
+        "diasem": ciclo.plc_diasem,
+    }
+    if all(value is None for value in values.values()):
+        return None
+    return values
+
+
+def _section_counters(rows: List[SeccionEstado]) -> dict:
+    con_dato = len(rows)
+    automatico = sum(1 for row in rows if row.automatico)
+    manual = sum(1 for row in rows if row.manual)
+    horario_activo = sum(1 for row in rows if row.horario_activo)
+    apagadas = sum(
+        1
+        for row in rows
+        if not row.automatico and not row.manual and not row.horario_activo
+    )
+    return {
+        "total": SECTION_COUNT,
+        "con_dato": con_dato,
+        "automatico": automatico,
+        "manual": manual,
+        "horario_activo": horario_activo,
+        "apagadas": apagadas,
+    }
+
+
+@router.get("/api/estado", response_model=CicloResponse)
+def get_estado(db: Session = Depends(get_db)):
+    return _latest_ciclo(db)
+
+
+@router.get("/api/dashboard/resumen", response_model=DashboardResumenResponse)
+def get_dashboard_resumen(db: Session = Depends(get_db)):
+    ciclo = _latest_ciclo(db)
+    secciones = _latest_valid_secciones(db)
+    now = datetime.now(timezone.utc)
+    age = _age_seconds(ciclo.timestamp, now)
+    return {
+        "timestamp_rpi": ciclo.timestamp,
+        "plc_reloj": _plc_reloj(ciclo),
+        "fins_ok": ciclo.fins_ok,
+        "fins_error": ciclo.fins_error,
+        "bloques": {
+            block: {
+                "status": getattr(ciclo, f"{block}_status"),
+                "error": getattr(ciclo, f"{block}_error"),
+            }
+            for block in READ_BLOCKS
+        },
+        "secciones": _section_counters(secciones),
+        "diagnostico": {
+            "cycle_time_error": ciclo.cycle_time_error,
+            "low_battery": ciclo.low_battery,
+            "io_verify_error": ciclo.io_verify_error,
+        },
+        "frescura": {
+            "generated_at": now,
+            "timestamp_rpi": ciclo.timestamp,
+            "age_seconds": age,
+            "stale_after_seconds": STALE_AFTER_SECONDS,
+            "is_stale": age is None or age > STALE_AFTER_SECONDS,
+        },
+        "capabilities": {
+            "mode": "readonly",
+            "can_write": False,
+            "write_mode_available": False,
+            "auth_required_for_write": True,
+        },
+    }
 
 
 @router.get("/api/secciones/actual", response_model=List[SeccionEstadoResponse])
