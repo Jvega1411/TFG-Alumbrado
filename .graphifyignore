@@ -11,10 +11,19 @@ __pycache__/
 .mypy_cache/
 
 # Datos de brainstorming y herramientas locales
+.claude/
+.roundtable/
 .superpowers/
+ROUNDTABLE.md
+agents/
+tasks/
+docs/roundtable-design.md
+docs/superpowers/
 
 # Capturas raw del PLC: usar resumen curado en el vault
 data/smoke_fins/*.json
+Wiresharks/
+AIS_HMI1.html
 
 # Bases de datos y datos runtime
 *.db

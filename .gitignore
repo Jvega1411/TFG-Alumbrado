@@ -23,12 +23,20 @@ graphify-out/
 .graphify_cache/
 
 # Local assistant/tool state
-.claude/settings.local.json
+.claude/
+.roundtable/
 .superpowers/
+ROUNDTABLE.md
+agents/
+tasks/
+docs/roundtable-design.md
+docs/superpowers/
 
 # Local/manual industrial artifacts
 LD_Ilum.pdf
 smoke_fins.py
+AIS_HMI1.html
+Wiresharks/
 
 # Archived OPCUA project local/generated/sensitive files
 _old/OPCUA_Alumbrado/.venv/
