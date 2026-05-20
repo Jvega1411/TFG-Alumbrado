@@ -218,7 +218,7 @@ function anomalyItems(summary, seccionesResult, horariosResult) {
   const age = summary?.frescura?.age_seconds;
   if (age !== null && age !== undefined && age >= STALE_CRIT_S) {
     items.push(["Pipeline caido", `Sin datos desde hace ${formatAge(age)}. Revisar publisher en RPi.`]);
-  } else if (summary?.frescura?.is_stale) {
+  } else if (age !== null && age !== undefined && age >= STALE_WARN_S) {
     items.push(["Dato antiguo", `Ultima lectura RPi hace ${formatAge(age)}. Pipeline posiblemente detenido.`]);
   }
   if (age !== null && age !== undefined && age < 0) {
@@ -376,7 +376,7 @@ function renderSistemaPanel(summaryResult) {
     freshnessHtml = badge("TS FUTURO", "bad");
   } else if (age >= STALE_CRIT_S) {
     freshnessHtml = badge(`CAIDO ${formatAge(age)}`, "bad");
-  } else if (summary.frescura?.is_stale) {
+  } else if (age >= STALE_WARN_S) {
     freshnessHtml = badge(`ANTIGUO ${formatAge(age)}`, "warn");
   } else {
     freshnessHtml = badge(formatAge(age), "ok");
@@ -435,7 +435,7 @@ async function showResumen() {
   const age = summary.frescura.age_seconds;
   const freshnessHint = age < 0 ? "Timestamp RPi en futuro"
     : age >= STALE_CRIT_S ? "Sin datos en mas de 24h"
-    : summary.frescura.is_stale ? "Dato antiguo (mas de 2h)"
+    : age >= STALE_WARN_S ? "Dato antiguo (mas de 2h)"
     : "Dentro del umbral";
   const anomalies = anomalyItems(summary, seccionesResult, horariosResult);
   const isCritical = age !== null && age !== undefined && (age < 0 || age >= STALE_CRIT_S);
