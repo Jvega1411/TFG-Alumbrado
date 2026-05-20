@@ -97,7 +97,7 @@ $resumen.secciones | Format-List
 
 Write-Host "=== API /api/secciones/actual resumen ==="
 $seccionesResponse = Invoke-WebRequest -Uri "$ApiBase/api/secciones/actual" -UseBasicParsing -TimeoutSec 5
-$secciones = @($seccionesResponse.Content | ConvertFrom-Json)
+$secciones = [array]($seccionesResponse.Content | ConvertFrom-Json)
 $manual = @($secciones | Where-Object { $_.manual }).Count
 $automatico = @($secciones | Where-Object { $_.automatico }).Count
 $horario = @($secciones | Where-Object { $_.horario_activo }).Count
