@@ -244,6 +244,11 @@ h1 {
   background: #fff7e8;
 }
 
+.ops-hero.bad .ops-primary {
+  border-color: #e9aea7;
+  background: #fff0ef;
+}
+
 .ops-kpis,
 .section-summary {
   display: grid;

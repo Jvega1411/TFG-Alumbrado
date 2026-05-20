@@ -17,6 +17,9 @@ const ICON_WARN = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none" s
 
 const SKELETON = `<div class="skeleton-panel"></div><div class="skeleton-panel"></div><div class="skeleton-panel"></div>`;
 
+const STALE_WARN_S = 7200;   // 2h → aviso amarillo
+const STALE_CRIT_S = 86400;  // 24h → aviso rojo
+
 const view = document.getElementById("view");
 const mainLayout = document.getElementById("mainLayout");
 const detailHeading = document.getElementById("detailHeading");
@@ -213,8 +216,10 @@ function sectionCounts(rows) {
 function anomalyItems(summary, seccionesResult, horariosResult) {
   const items = [];
   const age = summary?.frescura?.age_seconds;
-  if (summary?.frescura?.is_stale) {
-    items.push(["Dato antiguo", `Ultima lectura RPi: ${formatAge(age)}. Revisar si el pipeline sigue alimentando datos.`]);
+  if (age !== null && age !== undefined && age >= STALE_CRIT_S) {
+    items.push(["Pipeline caido", `Sin datos desde hace ${formatAge(age)}. Revisar publisher en RPi.`]);
+  } else if (summary?.frescura?.is_stale) {
+    items.push(["Dato antiguo", `Ultima lectura RPi hace ${formatAge(age)}. Pipeline posiblemente detenido.`]);
   }
   if (age !== null && age !== undefined && age < 0) {
     items.push(["Timestamp futuro", "La marca temporal RPi esta por delante del reloj de la UI."]);
@@ -369,6 +374,8 @@ function renderSistemaPanel(summaryResult) {
   let freshnessHtml;
   if (age !== null && age !== undefined && age < 0) {
     freshnessHtml = badge("TS FUTURO", "bad");
+  } else if (age >= STALE_CRIT_S) {
+    freshnessHtml = badge(`CAIDO ${formatAge(age)}`, "bad");
   } else if (summary.frescura?.is_stale) {
     freshnessHtml = badge(`ANTIGUO ${formatAge(age)}`, "warn");
   } else {
@@ -426,11 +433,13 @@ async function showResumen() {
   const counts = sectionCounts(sectionRows);
   const fins = finsState(summary);
   const age = summary.frescura.age_seconds;
-  const freshnessHint = age < 0
-    ? "Timestamp RPi en futuro"
-    : (summary.frescura.is_stale ? "Dato antiguo" : "Dentro del umbral");
+  const freshnessHint = age < 0 ? "Timestamp RPi en futuro"
+    : age >= STALE_CRIT_S ? "Sin datos en mas de 24h"
+    : summary.frescura.is_stale ? "Dato antiguo (mas de 2h)"
+    : "Dentro del umbral";
   const anomalies = anomalyItems(summary, seccionesResult, horariosResult);
-  const healthClass = anomalies.length ? "warn" : "ok";
+  const isCritical = age !== null && age !== undefined && (age < 0 || age >= STALE_CRIT_S);
+  const healthClass = isCritical ? "bad" : (anomalies.length ? "warn" : "ok");
   const healthLabel = anomalies.length ? `${anomalies.length} avisos` : "Sin avisos";
 
   view.innerHTML =
