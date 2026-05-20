@@ -19,7 +19,7 @@ router = APIRouter()
 
 READ_BLOCKS = ("secciones", "modo", "fotocelula", "reloj", "horarios", "diagnostico")
 SECTION_COUNT = 112
-STALE_AFTER_SECONDS = 30
+STALE_AFTER_SECONDS = 3600  # 1h — dato realmente sin pipeline, no fluctuación normal
 
 
 def init_engine(engine) -> None:
