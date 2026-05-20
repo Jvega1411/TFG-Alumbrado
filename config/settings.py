@@ -138,6 +138,10 @@ class Config:
             raise ValueError(f"API_PORT fuera de rango: {cls.API_PORT}")
 
     @classmethod
+    def validate_mqtt(cls) -> None:
+        cls._validate_mqtt()
+
+    @classmethod
     def validate_publisher(cls) -> None:
         cls.validate()
         if not cls.UDP_LOCAL_HOST.strip():
