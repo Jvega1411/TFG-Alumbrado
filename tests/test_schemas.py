@@ -113,6 +113,7 @@ class TestHorarioTramoResponse:
 class TestSeccionHistorialResponse:
     def test_from_dict(self):
         data = {
+            "ciclo_id": 10,
             "timestamp": _utc_now(),
             "seccion_id": 5,
             "automatico": True,
@@ -120,5 +121,6 @@ class TestSeccionHistorialResponse:
             "horario_activo": False,
         }
         resp = SeccionHistorialResponse(**data)
+        assert resp.ciclo_id == 10
         assert resp.seccion_id == 5
         assert resp.automatico is True

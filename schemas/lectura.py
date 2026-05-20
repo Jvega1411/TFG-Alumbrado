@@ -63,6 +63,7 @@ class HorarioTramoResponse(BaseModel):
 class SeccionHistorialResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
+    ciclo_id: int
     timestamp: datetime
     seccion_id: int
     automatico: bool

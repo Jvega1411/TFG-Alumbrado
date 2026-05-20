@@ -24,6 +24,9 @@ def test_alembic_upgrade_uses_db_estados_url(tmp_path, monkeypatch):
     inspector = inspect(engine)
     assert {"ciclo", "seccion_estado", "horario_tramo"}.issubset(set(inspector.get_table_names()))
     assert "timestamp" in {col["name"] for col in inspector.get_columns("horario_tramo")}
+    indexes = {idx["name"] for idx in inspector.get_indexes("horario_tramo")}
+    assert "ix_horario_tramo_timestamp" in indexes
+    assert "ix_horario_tramo_tramo_timestamp" in indexes
 
 
 def test_alembic_upgrade_adds_horario_timestamp_to_existing_schema(tmp_path, monkeypatch):
@@ -80,6 +83,9 @@ def test_alembic_upgrade_adds_horario_timestamp_to_existing_schema(tmp_path, mon
     columns = {col["name"]: col for col in inspector.get_columns("horario_tramo")}
     assert "timestamp" in columns
     assert columns["timestamp"]["nullable"] is False
+    indexes = {idx["name"] for idx in inspector.get_indexes("horario_tramo")}
+    assert "ix_horario_tramo_timestamp" in indexes
+    assert "ix_horario_tramo_tramo_timestamp" in indexes
 
     with engine.connect() as conn:
         timestamp = conn.execute(text("SELECT timestamp FROM horario_tramo WHERE tramo_id = 1")).scalar_one()

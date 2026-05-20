@@ -16,23 +16,38 @@ files.
 
 ## Project
 
-- Purpose: read-only supervision and data capture for industrial lighting.
+- Purpose: supervision and data capture for industrial lighting.
 - PLC: Omron Sysmac CJ2M over FINS/UDP.
 - OT node: Raspberry Pi publisher, no database/API in phase 2.
 - IT node: Lenovo runs Mosquitto, subscriber, SQLite/API/dashboard.
 - UI: FastAPI serves static HTML/CSS/JS from `web/`.
 
-This system is not a control system. It must not modify the PLC or lighting
-installation.
+The TFG deliverable and default runtime are read-only. Company final-product
+work may include controlled write functions, but only when the user explicitly
+requests write-mode work for that scope.
 
-## Safety Rules
+## Operating Modes
 
-- No FINS writes, force/set/reset, mode changes, or PLC memory modifications.
-- No endpoints or UI controls that can change PLC state.
+- **TFG/read-only mode is the default.** FINS access is limited to passive reads
+  and diagnostics. No endpoint, UI control, acquisition task, or script may
+  change PLC state in this mode.
+- **Company write-mode work is opt-in.** Implementing write functions is allowed
+  only after an explicit user request for final-product write-mode work. The
+  change must be isolated from the TFG/read-only path, disabled by default, and
+  documented as write-capable.
+- Write-mode code must include deliberate operator action, authentication or an
+  equivalent access gate, input validation, audit logging, bounded timeouts,
+  clear failure states, and a defined manual fallback/rollback procedure.
+- FINS writes, force/set/reset, mode changes, or PLC memory modifications remain
+  prohibited unless the task is explicitly approved as company write-mode work.
+- Endpoints or UI controls that can change PLC state remain prohibited unless
+  the task is explicitly approved as company write-mode work.
 - Do not read, print, commit, or summarize secrets from `.env`, credentials,
   private keys, connection strings, or real databases.
 - Do not run commands against the real PLC, OT network, system services,
   firewall, `/opt`, or production databases without explicit user approval.
+- Do not automate real PLC write tests. Real write validation must be manual,
+  controlled by the user, and based on confirmed PLC addresses/semantics.
 - If a value is unknown, mark it pending. Do not invent PLC semantics.
 
 ## Sources Of Truth
@@ -68,7 +83,7 @@ or tests.
 - Preserve Raspberry Pi and Windows Lenovo compatibility.
 - Use structured parsers/APIs instead of ad hoc string handling when practical.
 - Keep the dashboard read-only unless the user explicitly asks for authenticated
-  write-mode work.
+  company write-mode work.
 - Update tests when behavior changes.
 - Run proportional verification before declaring work complete.
 

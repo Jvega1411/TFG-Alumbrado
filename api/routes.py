@@ -65,7 +65,7 @@ def _age_seconds(timestamp: Optional[datetime], now: datetime) -> Optional[int]:
     if timestamp is None:
         return None
     ts = timestamp if timestamp.tzinfo is not None else timestamp.replace(tzinfo=timezone.utc)
-    return max(0, int((now - ts.astimezone(timezone.utc)).total_seconds()))
+    return int((now - ts.astimezone(timezone.utc)).total_seconds())
 
 
 def _plc_reloj(ciclo: Ciclo) -> Optional[dict]:
@@ -137,7 +137,7 @@ def get_dashboard_resumen(db: Session = Depends(get_db)):
             "timestamp_rpi": ciclo.timestamp,
             "age_seconds": age,
             "stale_after_seconds": STALE_AFTER_SECONDS,
-            "is_stale": age is None or age > STALE_AFTER_SECONDS,
+            "is_stale": age is None or age < 0 or age > STALE_AFTER_SECONDS,
         },
         "capabilities": {
             "mode": "readonly",
@@ -193,6 +193,7 @@ def get_historial_ciclos(
     desde: Optional[datetime] = Query(None),
     hasta: Optional[datetime] = Query(None),
     limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ):
     q = db.query(Ciclo)
@@ -200,12 +201,36 @@ def get_historial_ciclos(
         q = q.filter(Ciclo.timestamp >= desde)
     if hasta is not None:
         q = q.filter(Ciclo.timestamp <= hasta)
-    return q.order_by(Ciclo.timestamp.desc()).limit(limit).all()
+    return q.order_by(Ciclo.timestamp.desc(), Ciclo.id.desc()).offset(offset).limit(limit).all()
+
+
+@router.get("/api/historial/horarios", response_model=List[HorarioTramoResponse])
+def get_historial_horarios(
+    ciclo_id: Optional[int] = Query(None, ge=1),
+    tramo_id: Optional[int] = Query(None, ge=1, le=12),
+    desde: Optional[datetime] = Query(None),
+    hasta: Optional[datetime] = Query(None),
+    limit: int = Query(200, ge=1, le=1000),
+    db: Session = Depends(get_db),
+):
+    q = db.query(HorarioTramo)
+    if ciclo_id is not None:
+        q = q.filter(HorarioTramo.ciclo_id == ciclo_id)
+    if tramo_id is not None:
+        q = q.filter(HorarioTramo.tramo_id == tramo_id)
+    if desde is not None:
+        q = q.filter(HorarioTramo.timestamp >= desde)
+    if hasta is not None:
+        q = q.filter(HorarioTramo.timestamp <= hasta)
+    if ciclo_id is not None:
+        return q.order_by(HorarioTramo.tramo_id).limit(limit).all()
+    return q.order_by(HorarioTramo.timestamp.desc(), HorarioTramo.id.desc()).limit(limit).all()
 
 
 @router.get("/api/historial/secciones", response_model=List[SeccionHistorialResponse])
 def get_historial_secciones(
     seccion_id: Optional[int] = Query(None, ge=1, le=112),
+    ciclo_id: Optional[int] = Query(None, ge=1),
     desde: Optional[datetime] = Query(None),
     hasta: Optional[datetime] = Query(None),
     limit: int = Query(200, ge=1, le=1000),
@@ -214,8 +239,12 @@ def get_historial_secciones(
     q = db.query(SeccionEstado)
     if seccion_id is not None:
         q = q.filter(SeccionEstado.seccion_id == seccion_id)
+    if ciclo_id is not None:
+        q = q.filter(SeccionEstado.ciclo_id == ciclo_id)
     if desde is not None:
         q = q.filter(SeccionEstado.timestamp >= desde)
     if hasta is not None:
         q = q.filter(SeccionEstado.timestamp <= hasta)
-    return q.order_by(SeccionEstado.timestamp.desc()).limit(limit).all()
+    if ciclo_id is not None:
+        return q.order_by(SeccionEstado.seccion_id).limit(limit).all()
+    return q.order_by(SeccionEstado.timestamp.desc(), SeccionEstado.id.desc()).limit(limit).all()

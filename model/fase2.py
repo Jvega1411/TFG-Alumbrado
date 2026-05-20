@@ -63,6 +63,8 @@ class HorarioTramo(Base):
     __tablename__ = "horario_tramo"
     __table_args__ = (
         Index("ix_horario_tramo_ciclo_id", "ciclo_id"),
+        Index("ix_horario_tramo_timestamp", "timestamp"),
+        Index("ix_horario_tramo_tramo_timestamp", "tramo_id", "timestamp"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)

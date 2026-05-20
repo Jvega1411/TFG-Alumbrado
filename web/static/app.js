@@ -7,6 +7,7 @@ const endpoints = {
   horarios: "/api/horarios",
   ciclos: "/api/historial/ciclos",
   historialSecciones: "/api/historial/secciones",
+  historialHorarios: "/api/historial/horarios",
 };
 
 const view = document.getElementById("view");
@@ -25,6 +26,12 @@ const clearDetail = document.getElementById("clearDetail");
 
 let activeView = "resumen";
 let refreshTimer = null;
+let historySelectedCicloId = null;
+let historyLoadedCiclos = [];
+let historyHasMore = false;
+let historyAnchorTs = null;
+let historySelectedSecciones = null;
+let historySelectedHorarios = null;
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -81,7 +88,6 @@ function asRows(data) {
   if (Array.isArray(data?.rows)) return data.rows;
   if (Array.isArray(data?.historial)) return data.historial;
   if (Array.isArray(data?.ciclos)) return data.ciclos;
-  if (data && typeof data === "object") return Object.values(data);
   return [];
 }
 
@@ -112,6 +118,7 @@ function formatDateTime(value) {
 
 function formatAge(seconds) {
   if (seconds === null || seconds === undefined) return "-";
+  if (seconds < 0) return "TS futuro";
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m`;
@@ -187,9 +194,14 @@ function updateHeader(summaryResult) {
   const fins = finsState(summary);
   apiStatus.innerHTML = badge("OK", "ok");
   finsStatus.innerHTML = badge(fins.label, fins.cls);
-  freshnessStatus.innerHTML = summary.frescura?.is_stale
-    ? badge(`ANTIGUO ${formatAge(summary.frescura.age_seconds)}`, "warn")
-    : badge(formatAge(summary.frescura?.age_seconds), "ok");
+  const _age = summary.frescura?.age_seconds;
+  if (_age !== null && _age !== undefined && _age < 0) {
+    freshnessStatus.innerHTML = badge("TS FUTURO", "bad");
+  } else if (summary.frescura?.is_stale) {
+    freshnessStatus.innerHTML = badge(`ANTIGUO ${formatAge(_age)}`, "warn");
+  } else {
+    freshnessStatus.innerHTML = badge(formatAge(_age), "ok");
+  }
   capabilityStatus.innerHTML = summary.capabilities?.can_write
     ? badge("CONTROL", "warn")
     : badge("READ-ONLY", "neutral");
@@ -327,6 +339,10 @@ async function showResumen() {
   const activeCount = Math.max(0, counters.con_dato - counters.apagadas);
   const horarioRows = asRows(horariosResult.data);
   const fins = finsState(summary);
+  const age = summary.frescura.age_seconds;
+  const freshnessHint = age < 0
+    ? "Timestamp RPi en futuro"
+    : (summary.frescura.is_stale ? "Dato antiguo" : "Dentro del umbral");
 
   view.innerHTML =
     renderPanel("Estado operativo", "Lectura actual del sistema de alumbrado", `
@@ -334,7 +350,7 @@ async function showResumen() {
         ${metric("FINS", badge(fins.label, fins.cls), summary.fins_error || "Sin error global")}
         ${metric("Secciones activas", escapeHtml(String(activeCount)), `${counters.apagadas} apagadas / ${counters.con_dato} con dato`)}
         ${metric("Horarios raw", escapeHtml(String(horarioRows.length)), "Semantica PLC pendiente")}
-        ${metric("Frescura", escapeHtml(formatAge(summary.frescura.age_seconds)), summary.frescura.is_stale ? "Dato antiguo" : "Dentro del umbral")}
+        ${metric("Frescura", escapeHtml(formatAge(age)), freshnessHint)}
       </div>
     `) +
     renderPanel("Bloques FINS", "Cada bloque puede estar OK aunque otro haya fallado", `
@@ -433,52 +449,241 @@ async function showHorarios() {
   view.innerHTML = renderPanel("Horarios", "Datos raw hasta confirmar semantica PLC", body, block);
 }
 
+function miniBadge(ok, absent = false) {
+  if (absent || ok === null || ok === undefined) {
+    return `<span class="mini-badge neutral" title="Sin estado" aria-label="Sin estado">?</span>`;
+  }
+  if (ok === true || ok === "ok") {
+    return `<span class="mini-badge ok" title="OK" aria-label="OK">✓</span>`;
+  }
+  return `<span class="mini-badge bad" title="Fallo" aria-label="Fallo">✗</span>`;
+}
+
+function statusMiniBadge(statusField) {
+  if (statusField === null || statusField === undefined) return miniBadge(null, true);
+  if (statusField === "absent") {
+    return `<span class="mini-badge warn" title="Ausente" aria-label="Ausente">!</span>`;
+  }
+  return miniBadge(statusField === "ok");
+}
+
+function historyBlockMessage(ciclo, block, label) {
+  const status = ciclo?.[`${block}_status`];
+  const error = ciclo?.[`${block}_error`];
+  if (status === "failed") return `Fallo ${label}${error ? `: ${error}` : ""}`;
+  if (status === "absent") return `${label} ausente en este ciclo.`;
+  if (status && status !== "ok") return `${label}: ${status}${error ? ` (${error})` : ""}`;
+  return `Sin datos de ${label} para este ciclo.`;
+}
+
+function renderHistoryActions() {
+  return `<button type="button" class="history-refresh" id="refreshHistoryBtn">Actualizar</button>
+    <span class="badge neutral">${historyLoadedCiclos.length} ciclos</span>`;
+}
+
+function renderCiclosPanel() {
+  if (!historyLoadedCiclos.length) {
+    return renderPanel(
+      "Historial de ciclos",
+      "Clic en una fila para ver las secciones de ese ciclo",
+      renderEmpty("Sin historial de ciclos disponible."),
+      renderHistoryActions(),
+    );
+  }
+
+  const tbodyRows = historyLoadedCiclos.map((row) => {
+    const isActive = row.id === historySelectedCicloId;
+    return `<tr class="cycle-row${isActive ? " active" : ""}" data-ciclo-id="${row.id}">
+      <td class="mono">${escapeHtml(row.id)}</td>
+      <td class="mono">${escapeHtml(formatDateTime(row.timestamp))}</td>
+      <td>${miniBadge(row.fins_ok)}</td>
+      <td>${statusMiniBadge(row.secciones_status)}</td>
+      <td>${statusMiniBadge(row.modo_status)}</td>
+      <td>${statusMiniBadge(row.reloj_status)}</td>
+      <td>${statusMiniBadge(row.horarios_status)}</td>
+      <td>${statusMiniBadge(row.diagnostico_status)}</td>
+      <td class="error-cell">${escapeHtml(row.fins_error || "")}</td>
+    </tr>`;
+  }).join("");
+
+  const body = `<div class="table-wrap"><table>
+    <thead><tr>
+      <th>#ID</th><th>Timestamp</th><th>FINS</th>
+      <th>Sec</th><th>Mod</th><th>Rel</th><th>Hor</th><th>Diag</th><th>Error</th>
+    </tr></thead>
+    <tbody id="cyclesTableBody">${tbodyRows}</tbody>
+  </table></div>
+  ${historyHasMore ? `<button type="button" class="load-more" id="loadMoreBtn">Cargar más ciclos</button>` : ""}`;
+
+  return renderPanel(
+    "Historial de ciclos",
+    "Clic en una fila para ver las secciones de ese ciclo",
+    body,
+    renderHistoryActions(),
+  );
+}
+
+function renderHistorySecciones() {
+  const ciclo = historyLoadedCiclos.find((c) => c.id === historySelectedCicloId);
+  if (!ciclo) return "";
+
+  const ts = formatDateTime(ciclo.timestamp);
+
+  if (historySelectedSecciones === null) {
+    return renderPanel(`Ciclo #${historySelectedCicloId}`, `${ts} · cargando…`, renderEmpty("Cargando secciones…"));
+  }
+
+  if (!Array.isArray(historySelectedSecciones) || historySelectedSecciones.length === 0) {
+    return renderPanel(
+      `Ciclo #${historySelectedCicloId}`,
+      ts,
+      renderEmpty(historyBlockMessage(ciclo, "secciones", "secciones")),
+      statusMiniBadge(ciclo.secciones_status),
+    );
+  }
+
+  const rows = normalizeSections(historySelectedSecciones);
+  const activeCount = rows.filter((r) => r.state !== "Sin datos" && r.state !== "Apagada").length;
+  const gridHtml = rows.map((row) => `
+    <button type="button" class="section-cell ${row.css}"
+            data-sec-name="${escapeHtml(row.name)}"
+            data-sec-state="${escapeHtml(row.state)}"
+            data-sec-ts="${escapeHtml(formatDateTime(row.ts))}"
+            aria-label="${escapeHtml(row.name)}: ${escapeHtml(row.state)}">
+      <div class="section-name">${escapeHtml(row.name)}</div>
+      <div class="section-state">${escapeHtml(row.state)}</div>
+    </button>
+  `).join("");
+
+  return renderPanel(
+    `Ciclo #${historySelectedCicloId}`,
+    `${ts} · ${activeCount} activas`,
+    `<div class="section-grid" id="historySecGrid">${gridHtml}</div>`,
+  );
+}
+
+function renderHistoryHorarios() {
+  const ciclo = historyLoadedCiclos.find((c) => c.id === historySelectedCicloId);
+  if (!ciclo) return "";
+
+  const ts = formatDateTime(ciclo.timestamp);
+
+  if (historySelectedHorarios === null) {
+    return renderPanel(`Horarios ciclo #${historySelectedCicloId}`, ts, renderEmpty("Cargando horarios…"));
+  }
+
+  if (!Array.isArray(historySelectedHorarios) || historySelectedHorarios.length === 0) {
+    return renderPanel(
+      `Horarios ciclo #${historySelectedCicloId}`,
+      ts,
+      renderEmpty(historyBlockMessage(ciclo, "horarios", "horarios")),
+      statusMiniBadge(ciclo.horarios_status),
+    );
+  }
+
+  const body = `<div class="notice warn">
+      Horarios mostrados como valores raw. Semantica D1000/D3632 pendiente.
+    </div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Tramo</th><th>Inicio raw</th><th>Fin raw</th><th>Timestamp</th></tr></thead>
+      <tbody>
+        ${historySelectedHorarios.map((row) => `
+          <tr>
+            <td class="mono">${escapeHtml(row?.tramo_id ?? "-")}</td>
+            <td class="mono">${escapeHtml(row?.inicio_raw ?? "-")}</td>
+            <td class="mono">${escapeHtml(row?.fin_raw ?? "-")}</td>
+            <td class="mono">${escapeHtml(formatDateTime(getTimestamp(row)))}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table></div>`;
+
+  return renderPanel(`Horarios ciclo #${historySelectedCicloId}`, ts, body);
+}
+
+function renderHistorialView() {
+  view.innerHTML = renderCiclosPanel() + renderHistorySecciones() + renderHistoryHorarios();
+
+  document.getElementById("cyclesTableBody")?.addEventListener("click", (e) => {
+    const row = e.target.closest(".cycle-row");
+    if (!row) return;
+    selectHistoryCiclo(Number(row.dataset.cicloId));
+  });
+
+  document.getElementById("loadMoreBtn")?.addEventListener("click", () => loadHistorialCiclos(false));
+  document.getElementById("refreshHistoryBtn")?.addEventListener("click", () => loadHistorialCiclos(true));
+
+  document.getElementById("historySecGrid")?.addEventListener("click", (e) => {
+    const cell = e.target.closest("[data-sec-name]");
+    if (!cell) return;
+    document.querySelectorAll("#historySecGrid .section-cell.selected").forEach((c) => c.classList.remove("selected"));
+    cell.classList.add("selected");
+    setDetail("Sección (hist.)", cell.dataset.secName, cell.dataset.secState, cell.dataset.secTs);
+  });
+}
+
+async function selectHistoryCiclo(cicloId) {
+  const ciclo = historyLoadedCiclos.find((c) => c.id === cicloId);
+  historySelectedCicloId = cicloId;
+  historySelectedSecciones = null;
+  historySelectedHorarios = null;
+  setDetail("Ciclo", `#${cicloId}`, ciclo?.fins_ok ? "FINS OK" : "Parcial/Fallo", formatDateTime(ciclo?.timestamp));
+  renderHistorialView();
+  const requestedId = cicloId;
+
+  const secFetch = ciclo?.secciones_status === "ok"
+    ? fetchJson(`${endpoints.historialSecciones}?ciclo_id=${cicloId}&limit=112`)
+    : Promise.resolve(null);
+  const horFetch = ciclo?.horarios_status === "ok"
+    ? fetchJson(`${endpoints.historialHorarios}?ciclo_id=${cicloId}&limit=50`)
+    : Promise.resolve(null);
+
+  const [secResult, horResult] = await Promise.all([secFetch, horFetch]);
+  if (historySelectedCicloId !== requestedId) return;
+
+  historySelectedSecciones = secResult === null ? [] : (secResult.ok ? asRows(secResult.data) : []);
+  historySelectedHorarios = horResult === null ? [] : (horResult.ok ? asRows(horResult.data) : []);
+  renderHistorialView();
+}
+
+async function loadHistorialCiclos(reset = false) {
+  if (reset) {
+    historyLoadedCiclos = [];
+    historySelectedCicloId = null;
+    historySelectedSecciones = null;
+    historySelectedHorarios = null;
+    historyHasMore = false;
+    historyAnchorTs = null;
+    setDetail("-", "-", "-", "-");
+  }
+  const offset = historyLoadedCiclos.length;
+  const hastaParam = historyAnchorTs ? `&hasta=${encodeURIComponent(historyAnchorTs)}` : "";
+  const result = await fetchJson(`${endpoints.ciclos}?limit=100&offset=${offset}${hastaParam}`);
+  if (!result.ok) {
+    view.innerHTML = renderPanel(
+      "Historial de ciclos",
+      endpoints.ciclos,
+      renderEmpty(`Error al cargar historial (${result.status ? `HTTP ${result.status}` : "sin conexión"}).`),
+      endpointState(result),
+    );
+    return;
+  }
+  const rows = asRows(result.data);
+  if (reset && rows.length > 0) {
+    historyAnchorTs = rows[0].timestamp;
+  }
+  historyLoadedCiclos = [...historyLoadedCiclos, ...rows];
+  historyHasMore = rows.length >= 100;
+  renderHistorialView();
+}
+
 async function showHistorial() {
-  const [summaryResult, ciclos, secciones] = await Promise.all([
-    fetchSummary(),
-    fetchJson(endpoints.ciclos),
-    fetchJson(endpoints.historialSecciones),
-  ]);
-
-  view.innerHTML =
-    renderHistoryTable("Historial de ciclos", endpoints.ciclos, ciclos, renderCycleRow) +
-    renderHistoryTable("Historial de secciones", endpoints.historialSecciones, secciones, renderSectionHistoryRow);
-}
-
-function renderHistoryTable(title, endpoint, result, rowRenderer) {
-  const rows = asRows(result.data).slice(0, 50);
-  const body = rows.length
-    ? `<div class="table-wrap"><table>
-        <thead><tr><th>#</th><th>Timestamp</th><th>Dato</th></tr></thead>
-        <tbody>
-          ${rows.map((row, index) => rowRenderer(row, index)).join("")}
-        </tbody>
-      </table></div>`
-    : renderEmpty("Sin historial disponible.");
-
-  return renderPanel(title, endpoint, body, endpointState(result));
-}
-
-function renderCycleRow(row, index) {
-  const state = row?.fins_ok === true ? badge("OK", "ok") : badge("PARCIAL/FALLO", "warn");
-  return `
-    <tr>
-      <td class="mono">${index + 1}</td>
-      <td class="mono">${escapeHtml(formatDateTime(getTimestamp(row)))}</td>
-      <td>${state} ${escapeHtml(row?.fins_error || "")}</td>
-    </tr>
-  `;
-}
-
-function renderSectionHistoryRow(row, index) {
-  const section = normalizeSection(row?.seccion_id ?? index + 1, sectionName(row?.seccion_id ?? index + 1), row);
-  return `
-    <tr>
-      <td class="mono">${escapeHtml(row?.seccion_id ?? index + 1)}</td>
-      <td class="mono">${escapeHtml(formatDateTime(getTimestamp(row)))}</td>
-      <td>${badge(section.state, section.css.replace("state-", ""))}</td>
-    </tr>
-  `;
+  await fetchSummary();
+  if (historyLoadedCiclos.length === 0) {
+    await loadHistorialCiclos(true);
+  } else {
+    renderHistorialView();
+  }
 }
 
 async function showDiagnostico() {
@@ -544,7 +749,9 @@ async function renderActive() {
     await views[activeView]();
   } finally {
     view.setAttribute("aria-busy", "false");
-    refreshTimer = setTimeout(renderActive, activeView === "resumen" ? 5000 : 10000);
+    if (activeView !== "historial") {
+      refreshTimer = setTimeout(renderActive, activeView === "resumen" ? 5000 : 10000);
+    }
   }
 }
 
