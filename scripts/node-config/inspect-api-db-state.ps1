@@ -10,6 +10,30 @@ param(
 $ErrorActionPreference = "Stop"
 $py = Join-Path $Root ".venv\Scripts\python.exe"
 
+function Invoke-AlumbradoPython {
+    param(
+        [string]$Code,
+        [string[]]$Arguments = @()
+    )
+    $tmp = New-TemporaryFile
+    $oldPythonPath = $env:PYTHONPATH
+    try {
+        Set-Content -LiteralPath $tmp.FullName -Value $Code -Encoding utf8
+        if ($oldPythonPath) {
+            $env:PYTHONPATH = "$Root;$oldPythonPath"
+        } else {
+            $env:PYTHONPATH = $Root
+        }
+        & $py $tmp.FullName @Arguments
+        if ($LASTEXITCODE -ne 0) {
+            throw "Python salio con codigo $LASTEXITCODE"
+        }
+    } finally {
+        $env:PYTHONPATH = $oldPythonPath
+        Remove-Item -LiteralPath $tmp.FullName -Force -ErrorAction SilentlyContinue
+    }
+}
+
 if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
     throw "No existe Root: $Root"
 }
@@ -20,7 +44,7 @@ if (-not (Test-Path -LiteralPath $py -PathType Leaf)) {
 Set-Location -LiteralPath $Root
 
 Write-Host "=== Config efectiva desde $Root ==="
-& $py -c @'
+Invoke-AlumbradoPython -Code @'
 from config.settings import Config
 print("DB_ESTADOS_URL=", Config.DB_ESTADOS_URL)
 print("MQTT_BROKER=", f"{Config.MQTT_BROKER_HOST}:{Config.MQTT_BROKER_PORT}")
@@ -30,7 +54,7 @@ print("API=", f"{Config.API_HOST}:{Config.API_PORT}")
 
 Write-Host ""
 Write-Host "=== Ultimos ciclos en SQLite ==="
-& $py -c @'
+Invoke-AlumbradoPython -Code @'
 import sys
 from sqlalchemy import create_engine, text
 from config.settings import Config
@@ -60,7 +84,7 @@ with engine.connect() as conn:
             f"{row['secciones_status']} | {row['manual']} | "
             f"{row['automatico']} | {row['horario_activo']}"
         )
-'@ $Limit
+'@ -Arguments @("$Limit")
 
 Write-Host ""
 Write-Host "=== API /api/estado ==="
@@ -72,7 +96,8 @@ $resumen = Invoke-RestMethod -Uri "$ApiBase/api/dashboard/resumen" -TimeoutSec 5
 $resumen.secciones | Format-List
 
 Write-Host "=== API /api/secciones/actual resumen ==="
-$secciones = @(Invoke-RestMethod -Uri "$ApiBase/api/secciones/actual" -TimeoutSec 5)
+$seccionesResponse = Invoke-WebRequest -Uri "$ApiBase/api/secciones/actual" -UseBasicParsing -TimeoutSec 5
+$secciones = @($seccionesResponse.Content | ConvertFrom-Json)
 $manual = @($secciones | Where-Object { $_.manual }).Count
 $automatico = @($secciones | Where-Object { $_.automatico }).Count
 $horario = @($secciones | Where-Object { $_.horario_activo }).Count
