@@ -10,28 +10,34 @@ const endpoints = {
   historialHorarios: "/api/historial/horarios",
 };
 
+// SVG icons — consistentes entre OS/fuentes a diferencia de caracteres Unicode
+const ICON_CHECK = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="1.5 5 4 7.5 8.5 2"/></svg>`;
+const ICON_CROSS = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><line x1="2" y1="2" x2="8" y2="8"/><line x1="8" y1="2" x2="2" y2="8"/></svg>`;
+const ICON_WARN = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 2v3.5"/><circle cx="5" cy="8" r="0.75" fill="currentColor" stroke="none"/></svg>`;
+
+const SKELETON = `<div class="skeleton-panel"></div><div class="skeleton-panel"></div><div class="skeleton-panel"></div>`;
+
 const view = document.getElementById("view");
-const apiStatus = document.getElementById("apiStatus");
-const finsStatus = document.getElementById("finsStatus");
-const freshnessStatus = document.getElementById("freshnessStatus");
-const capabilityStatus = document.getElementById("capabilityStatus");
-const rpiClock = document.getElementById("rpiClock");
-const plcClock = document.getElementById("plcClock");
-const uiClock = document.getElementById("uiClock");
+const mainLayout = document.getElementById("mainLayout");
+const detailHeading = document.getElementById("detailHeading");
 const detailName = document.getElementById("detailName");
 const detailType = document.getElementById("detailType");
 const detailState = document.getElementById("detailState");
 const detailTs = document.getElementById("detailTs");
 const clearDetail = document.getElementById("clearDetail");
+const refreshBtn = document.getElementById("refreshBtn");
 
 let activeView = "resumen";
+let currentViewRendered = null;
 let refreshTimer = null;
 let historySelectedCicloId = null;
 let historyLoadedCiclos = [];
 let historyHasMore = false;
 let historyAnchorTs = null;
 let historySelectedSecciones = null;
-let historySelectedHorarios = null;
+let sectionFilterState = "all";
+let sectionSearchTerm = "";
+let sectionSearchTimer = null;
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -47,6 +53,11 @@ function sectionName(index) {
 }
 
 function setDetail(type, name, state, ts) {
+  if (detailHeading) {
+    detailHeading.textContent = activeView === "historial" ? "Ciclo"
+      : activeView === "secciones" ? "Cercha"
+      : "Detalle";
+  }
   detailType.textContent = type || "-";
   detailName.textContent = name || "-";
   detailState.textContent = state || "-";
@@ -142,6 +153,24 @@ function badge(text, cls = "") {
   return `<span class="badge ${cls}">${escapeHtml(text)}</span>`;
 }
 
+function miniBadge(ok, absent = false) {
+  if (absent || ok === null || ok === undefined) {
+    return `<span class="mini-badge neutral" title="Sin estado" aria-label="Sin estado">?</span>`;
+  }
+  if (ok === true || ok === "ok") {
+    return `<span class="mini-badge ok" title="OK" aria-label="OK">${ICON_CHECK}</span>`;
+  }
+  return `<span class="mini-badge bad" title="Fallo" aria-label="Fallo">${ICON_CROSS}</span>`;
+}
+
+function statusMiniBadge(statusField) {
+  if (statusField === null || statusField === undefined) return miniBadge(null, true);
+  if (statusField === "absent") {
+    return `<span class="mini-badge warn" title="Ausente" aria-label="Ausente">${ICON_WARN}</span>`;
+  }
+  return miniBadge(statusField === "ok");
+}
+
 function endpointState(result) {
   if (result.ok) return badge("OK", "ok");
   if (result.status === 404) return badge("SIN DATOS", "warn");
@@ -151,10 +180,6 @@ function endpointState(result) {
 
 function blockStatus(summary, block) {
   return summary?.bloques?.[block]?.status ?? null;
-}
-
-function blockError(summary, block) {
-  return summary?.bloques?.[block]?.error ?? null;
 }
 
 function blockOk(summary, block) {
@@ -169,6 +194,50 @@ function blockBadge(summary, block) {
   return badge("SIN ESTADO", "warn");
 }
 
+function sectionClass(row) {
+  if (row.css === "state-active") return "active";
+  if (row.css === "state-off") return "off";
+  if (row.css === "state-bad") return "bad";
+  if (row.css === "state-warn") return "warn";
+  return "unknown";
+}
+
+function sectionCounts(rows) {
+  return rows.reduce((acc, row) => {
+    acc.total += 1;
+    acc[sectionClass(row)] += 1;
+    return acc;
+  }, { total: 0, active: 0, off: 0, bad: 0, warn: 0, unknown: 0 });
+}
+
+function anomalyItems(summary, seccionesResult, horariosResult) {
+  const items = [];
+  const age = summary?.frescura?.age_seconds;
+  if (summary?.frescura?.is_stale) {
+    items.push(["Dato antiguo", `Ultima lectura RPi: ${formatAge(age)}. Revisar si el pipeline sigue alimentando datos.`]);
+  }
+  if (age !== null && age !== undefined && age < 0) {
+    items.push(["Timestamp futuro", "La marca temporal RPi esta por delante del reloj de la UI."]);
+  }
+  const fins = finsState(summary);
+  if (fins.label !== "OK") {
+    items.push([`FINS ${fins.label}`, summary?.fins_error || "Hay bloques de lectura parciales o fallidos."]);
+  }
+  if (summary?.diagnostico?.cycle_time_error) items.push(["PLC cycle time", "El diagnostico PLC marca error de tiempo de ciclo."]);
+  if (summary?.diagnostico?.low_battery) items.push(["Bateria PLC", "El diagnostico PLC marca bateria baja."]);
+  if (summary?.diagnostico?.io_verify_error) items.push(["I/O verify", "El diagnostico PLC marca error de verificacion I/O."]);
+  if (summary?.secciones && summary.secciones.con_dato < summary.secciones.total) {
+    items.push(["Secciones sin dato", `${summary.secciones.total - summary.secciones.con_dato} secciones no tienen lectura valida.`]);
+  }
+  Object.entries(summary?.bloques ?? {}).forEach(([name, block]) => {
+    if (block.status === "failed") items.push([`Bloque ${name}`, block.error || "Fallo de lectura."]);
+    if (block.status === "absent") items.push([`Bloque ${name}`, "Bloque ausente en el ciclo."]);
+  });
+  if (!seccionesResult.ok) items.push(["Endpoint secciones", `No disponible (${seccionesResult.status || "sin conexion"}).`]);
+  if (!horariosResult.ok && horariosResult.status !== 404) items.push(["Endpoint horarios", `No disponible (${horariosResult.status || "sin conexion"}).`]);
+  return items;
+}
+
 function finsState(summary) {
   if (!summary) return { label: "PENDIENTE", cls: "warn" };
   const anyOk = ["secciones", "modo", "fotocelula", "reloj", "horarios", "diagnostico"]
@@ -176,37 +245,6 @@ function finsState(summary) {
   if (summary.fins_ok === true) return { label: "OK", cls: "ok" };
   if (anyOk) return { label: "PARCIAL", cls: "warn" };
   return { label: "FALLO", cls: "bad" };
-}
-
-function updateHeader(summaryResult) {
-  uiClock.textContent = formatDateTime(new Date());
-  if (!summaryResult.ok) {
-    apiStatus.innerHTML = endpointState(summaryResult);
-    finsStatus.innerHTML = badge("PENDIENTE", "warn");
-    freshnessStatus.innerHTML = badge("SIN DATOS", "warn");
-    capabilityStatus.innerHTML = badge("READ-ONLY", "neutral");
-    rpiClock.textContent = "-";
-    plcClock.textContent = "-";
-    return;
-  }
-
-  const summary = summaryResult.data;
-  const fins = finsState(summary);
-  apiStatus.innerHTML = badge("OK", "ok");
-  finsStatus.innerHTML = badge(fins.label, fins.cls);
-  const _age = summary.frescura?.age_seconds;
-  if (_age !== null && _age !== undefined && _age < 0) {
-    freshnessStatus.innerHTML = badge("TS FUTURO", "bad");
-  } else if (summary.frescura?.is_stale) {
-    freshnessStatus.innerHTML = badge(`ANTIGUO ${formatAge(_age)}`, "warn");
-  } else {
-    freshnessStatus.innerHTML = badge(formatAge(_age), "ok");
-  }
-  capabilityStatus.innerHTML = summary.capabilities?.can_write
-    ? badge("CONTROL", "warn")
-    : badge("READ-ONLY", "neutral");
-  rpiClock.textContent = formatDateTime(summary.timestamp_rpi);
-  plcClock.textContent = formatPlcClock(summary.plc_reloj);
 }
 
 function renderPanel(title, sub, body, right = "") {
@@ -312,9 +350,56 @@ function normalizeSection(index, name, item) {
 }
 
 async function fetchSummary() {
-  const result = await fetchJson(endpoints.resumen);
-  updateHeader(result);
-  return result;
+  return fetchJson(endpoints.resumen);
+}
+
+function renderSistemaPanel(summaryResult) {
+  if (!summaryResult.ok) {
+    return renderPanel(
+      "Sistema",
+      "Estado de conectividad y lectura",
+      renderEmpty("Sin datos del sistema disponibles."),
+      endpointState(summaryResult),
+    );
+  }
+  const summary = summaryResult.data;
+  const fins = finsState(summary);
+  const age = summary?.frescura?.age_seconds;
+
+  let freshnessHtml;
+  if (age !== null && age !== undefined && age < 0) {
+    freshnessHtml = badge("TS FUTURO", "bad");
+  } else if (summary.frescura?.is_stale) {
+    freshnessHtml = badge(`ANTIGUO ${formatAge(age)}`, "warn");
+  } else {
+    freshnessHtml = badge(formatAge(age), "ok");
+  }
+
+  return renderPanel(
+    "Sistema",
+    "Estado de conectividad y bloques de lectura",
+    `<div class="sys-status-row">
+      ${badge("API OK", "ok")}
+      ${badge(`FINS ${fins.label}`, fins.cls)}
+      ${freshnessHtml}
+      ${badge(summary.capabilities.mode.toUpperCase(), "neutral")}
+    </div>
+    <div class="sys-clocks">
+      <div><span>RPi</span><strong>${escapeHtml(formatDateTime(summary.timestamp_rpi))}</strong></div>
+      <div><span>PLC</span><strong>${escapeHtml(formatPlcClock(summary.plc_reloj))}</strong></div>
+      <div><span>UI</span><strong>${escapeHtml(formatDateTime(new Date()))}</strong></div>
+    </div>
+    <div class="sys-blocks">
+      ${renderKeyValues([
+        ["Secciones", blockBadge(summary, "secciones")],
+        ["Modo", blockBadge(summary, "modo")],
+        ["Fotocelula", blockBadge(summary, "fotocelula")],
+        ["Reloj PLC", blockBadge(summary, "reloj")],
+        ["Horarios", blockBadge(summary, "horarios")],
+        ["Diagnostico", blockBadge(summary, "diagnostico")],
+      ])}
+    </div>`,
+  );
 }
 
 async function showResumen() {
@@ -337,71 +422,112 @@ async function showResumen() {
   const summary = summaryResult.data;
   const counters = summary.secciones;
   const activeCount = Math.max(0, counters.con_dato - counters.apagadas);
-  const horarioRows = asRows(horariosResult.data);
+  const sectionRows = seccionesResult.ok ? normalizeSections(seccionesResult.data) : [];
+  const counts = sectionCounts(sectionRows);
   const fins = finsState(summary);
   const age = summary.frescura.age_seconds;
   const freshnessHint = age < 0
     ? "Timestamp RPi en futuro"
     : (summary.frescura.is_stale ? "Dato antiguo" : "Dentro del umbral");
+  const anomalies = anomalyItems(summary, seccionesResult, horariosResult);
+  const healthClass = anomalies.length ? "warn" : "ok";
+  const healthLabel = anomalies.length ? `${anomalies.length} avisos` : "Sin avisos";
 
   view.innerHTML =
-    renderPanel("Estado operativo", "Lectura actual del sistema de alumbrado", `
-      <div class="status-grid">
-        ${metric("FINS", badge(fins.label, fins.cls), summary.fins_error || "Sin error global")}
-        ${metric("Secciones activas", escapeHtml(String(activeCount)), `${counters.apagadas} apagadas / ${counters.con_dato} con dato`)}
-        ${metric("Horarios raw", escapeHtml(String(horarioRows.length)), "Semantica PLC pendiente")}
-        ${metric("Frescura", escapeHtml(formatAge(age)), freshnessHint)}
-      </div>
-    `) +
-    renderPanel("Bloques FINS", "Cada bloque puede estar OK aunque otro haya fallado", `
-      ${renderKeyValues([
-        ["Secciones", blockBadge(summary, "secciones")],
-        ["Modo", blockBadge(summary, "modo")],
-        ["Fotocelula", blockBadge(summary, "fotocelula")],
-        ["Reloj PLC", blockBadge(summary, "reloj")],
-        ["Horarios", blockBadge(summary, "horarios")],
-        ["Diagnostico", blockBadge(summary, "diagnostico")],
-      ])}
-    `) +
-    renderPanel("Modo actual", "Preparado para evolucion futura, bloqueado en esta fase", `
-      <div class="readonly-box">
-        <strong>Supervision read-only</strong>
-        <span>No hay mandos, escrituras FINS ni cambios de horarios desde esta pantalla.</span>
+    renderPanel("Consola operativa", "Lectura read-only del ultimo ciclo persistido", `
+      <div class="ops-hero ${healthClass}">
+        <div class="ops-primary">
+          <span>Estado de datos</span>
+          <strong>${escapeHtml(healthLabel)}</strong>
+          <small>${escapeHtml(freshnessHint)}</small>
+        </div>
+        <div class="ops-kpis">
+          ${metric("FINS", badge(fins.label, fins.cls), summary.fins_error || "Sin error global")}
+          ${metric("Frescura", escapeHtml(formatAge(age)), freshnessHint)}
+          ${metric("Secciones activas", escapeHtml(String(activeCount)), `${counters.apagadas} apagadas / ${counters.con_dato} con dato`)}
+          ${metric("Modo", badge("READ-ONLY", "neutral"), "Sin mandos ni escrituras FINS")}
+        </div>
       </div>
     `, badge(summary.capabilities.mode.toUpperCase(), "neutral")) +
-    renderPanel("Contrato API", "Endpoints GET usados por el dashboard", `
-      ${renderKeyValues([
-        [endpoints.resumen, endpointState(summaryResult)],
-        [endpoints.secciones, endpointState(seccionesResult)],
-        [endpoints.horarios, endpointState(horariosResult)],
-      ])}
-    `);
+    renderPanel("Avisos", "Prioridad operativa antes de entrar al detalle", anomalies.length
+      ? `<div class="alert-list">${anomalies.map(([title, text]) => `
+          <div class="alert-item">
+            <strong>${escapeHtml(title)}</strong>
+            <span>${escapeHtml(text)}</span>
+          </div>
+        `).join("")}</div>`
+      : `<div class="empty success">No hay anomalias operativas en la ultima lectura.</div>`) +
+    renderPanel("Secciones", "Resumen de las 112 secciones de alumbrado", `
+      <div class="section-summary">
+        ${metric("Activas", escapeHtml(String(counts.active)), "Auto, manual u horario")}
+        ${metric("Apagadas", escapeHtml(String(counts.off)), "Fila valida con flags falsos")}
+        ${metric("Fallos", escapeHtml(String(counts.bad)), "Lectura invalida FINS")}
+        ${metric("Sin datos", escapeHtml(String(counts.unknown)), "Ausente o no disponible")}
+      </div>
+      <div class="console-actions">
+        <button type="button" class="secondary-action" data-jump="secciones">Abrir secciones</button>
+        <button type="button" class="secondary-action" data-jump="historial">Ver historial</button>
+        <button type="button" class="secondary-action" data-jump="tecnico">Diagnostico tecnico</button>
+      </div>
+    `, `${endpointState(seccionesResult)} ${badge(`${counters.con_dato}/${counters.total} con dato`, "neutral")}`) +
+    renderSistemaPanel(summaryResult);
+
+  document.querySelectorAll("[data-jump]").forEach((button) => {
+    button.addEventListener("click", () => switchView(button.dataset.jump));
+  });
 }
 
 async function showSecciones() {
+  if (!["all", "active", "off", "bad"].includes(sectionFilterState)) {
+    sectionFilterState = "all";
+  }
   const [summaryResult, result] = await Promise.all([
     fetchSummary(),
     fetchJson(endpoints.secciones),
   ]);
   const rows = normalizeSections(result.data);
-  const summary = summaryResult.data;
-  const counterText = summaryResult.ok
-    ? `${summary.secciones.con_dato}/${summary.secciones.total} con dato`
-    : "Sin resumen";
+  const counts = sectionCounts(rows);
+  const search = sectionSearchTerm.trim().toLowerCase();
+  const filteredRows = rows.filter((row) => {
+    const rowClass = sectionClass(row);
+    const matchesFilter = sectionFilterState === "all" || rowClass === sectionFilterState;
+    const matchesSearch = !search || row.name.toLowerCase().includes(search) || String(row.index).includes(search);
+    return matchesFilter && matchesSearch;
+  });
 
   view.innerHTML = renderPanel(
     "Secciones",
-    "112 secciones. Apagada significa fila valida con flags falsos.",
+    "Apagada significa fila valida con flags falsos.",
     result.ok
-      ? `<div class="section-grid" id="sectionGrid"></div>`
+      ? `<div class="section-tools">
+          <div class="filter-group" aria-label="Filtro de secciones">
+            ${[
+              ["all", `Todas ${counts.total}`],
+              ["active", `Activas ${counts.active}`],
+              ["off", `Apagadas ${counts.off}`],
+              ["bad", `Fallos ${counts.bad}`],
+            ].map(([value, label]) => `
+              <button type="button" class="filter-chip${sectionFilterState === value ? " active" : ""}" data-section-filter="${value}">
+                ${escapeHtml(label)}
+              </button>
+            `).join("")}
+          </div>
+          <label class="section-search">
+            <span>Buscar</span>
+            <input id="sectionSearch" type="search" value="${escapeHtml(sectionSearchTerm)}" placeholder="Sec001 o 1">
+          </label>
+        </div>
+        <div class="section-grid" id="sectionGrid"></div>`
       : renderEmpty("No hay bloque de secciones valido disponible."),
-    `${endpointState(result)} ${badge(counterText, "neutral")}`,
   );
 
   if (!result.ok) return;
 
   const grid = document.getElementById("sectionGrid");
-  rows.forEach((row) => {
+  if (!filteredRows.length) {
+    grid.innerHTML = `<div class="empty full-row">No hay secciones para el filtro actual.</div>`;
+  }
+  filteredRows.forEach((row) => {
     const cell = document.createElement("button");
     cell.type = "button";
     cell.className = `section-cell ${row.css}`;
@@ -417,133 +543,74 @@ async function showSecciones() {
     });
     grid.appendChild(cell);
   });
+
+  document.querySelectorAll("[data-section-filter]").forEach((button) => {
+    button.addEventListener("click", () => {
+      sectionFilterState = button.dataset.sectionFilter;
+      showSecciones();
+    });
+  });
+
+  document.getElementById("sectionSearch")?.addEventListener("input", (event) => {
+    sectionSearchTerm = event.target.value;
+    clearTimeout(sectionSearchTimer);
+    sectionSearchTimer = setTimeout(async () => {
+      await showSecciones();
+      const input = document.getElementById("sectionSearch");
+      input?.focus();
+      input?.setSelectionRange(sectionSearchTerm.length, sectionSearchTerm.length);
+    }, 180);
+  });
 }
 
-async function showHorarios() {
-  const [summaryResult, result] = await Promise.all([
-    fetchSummary(),
-    fetchJson(endpoints.horarios),
-  ]);
-  const rows = asRows(result.data);
-
-  const body = rows.length
-    ? `<div class="notice warn">
-        Horarios mostrados como valores raw. No se interpreta semantica PLC hasta validar ladder.
-      </div>
-      <div class="table-wrap"><table>
-        <thead><tr><th>Tramo</th><th>Inicio raw</th><th>Fin raw</th><th>Timestamp</th></tr></thead>
-        <tbody>
-          ${rows.map((row, index) => `
-            <tr>
-              <td class="mono">${escapeHtml(row?.tramo_id ?? row?.id ?? index + 1)}</td>
-              <td class="mono">${escapeHtml(row?.inicio_raw ?? "-")}</td>
-              <td class="mono">${escapeHtml(row?.fin_raw ?? "-")}</td>
-              <td class="mono">${escapeHtml(formatDateTime(getTimestamp(row)))}</td>
-            </tr>
-          `).join("")}
-        </tbody>
-      </table></div>`
-    : renderEmpty("Sin horarios disponibles. Semantica D1000/D3632 pendiente.");
-
-  const block = summaryResult.ok ? blockBadge(summaryResult.data, "horarios") : endpointState(result);
-  view.innerHTML = renderPanel("Horarios", "Datos raw hasta confirmar semantica PLC", body, block);
+function bitBadge(val) {
+  if (val === null || val === undefined) return badge("?", "warn");
+  return val ? badge("ON", "ok") : badge("OFF", "off");
 }
 
-function miniBadge(ok, absent = false) {
-  if (absent || ok === null || ok === undefined) {
-    return `<span class="mini-badge neutral" title="Sin estado" aria-label="Sin estado">?</span>`;
-  }
-  if (ok === true || ok === "ok") {
-    return `<span class="mini-badge ok" title="OK" aria-label="OK">✓</span>`;
-  }
-  return `<span class="mini-badge bad" title="Fallo" aria-label="Fallo">✗</span>`;
-}
-
-function statusMiniBadge(statusField) {
-  if (statusField === null || statusField === undefined) return miniBadge(null, true);
-  if (statusField === "absent") {
-    return `<span class="mini-badge warn" title="Ausente" aria-label="Ausente">!</span>`;
-  }
-  return miniBadge(statusField === "ok");
-}
-
-function historyBlockMessage(ciclo, block, label) {
-  const status = ciclo?.[`${block}_status`];
-  const error = ciclo?.[`${block}_error`];
-  if (status === "failed") return `Fallo ${label}${error ? `: ${error}` : ""}`;
-  if (status === "absent") return `${label} ausente en este ciclo.`;
-  if (status && status !== "ok") return `${label}: ${status}${error ? ` (${error})` : ""}`;
-  return `Sin datos de ${label} para este ciclo.`;
-}
-
-function renderHistoryActions() {
-  return `<button type="button" class="history-refresh" id="refreshHistoryBtn">Actualizar</button>
-    <span class="badge neutral">${historyLoadedCiclos.length} ciclos</span>`;
-}
-
-function renderCiclosPanel() {
-  if (!historyLoadedCiclos.length) {
-    return renderPanel(
-      "Historial de ciclos",
-      "Clic en una fila para ver las secciones de ese ciclo",
-      renderEmpty("Sin historial de ciclos disponible."),
-      renderHistoryActions(),
-    );
-  }
-
-  const tbodyRows = historyLoadedCiclos.map((row) => {
-    const isActive = row.id === historySelectedCicloId;
-    return `<tr class="cycle-row${isActive ? " active" : ""}" data-ciclo-id="${row.id}">
-      <td class="mono">${escapeHtml(row.id)}</td>
-      <td class="mono">${escapeHtml(formatDateTime(row.timestamp))}</td>
-      <td>${miniBadge(row.fins_ok)}</td>
-      <td>${statusMiniBadge(row.secciones_status)}</td>
-      <td>${statusMiniBadge(row.modo_status)}</td>
-      <td>${statusMiniBadge(row.reloj_status)}</td>
-      <td>${statusMiniBadge(row.horarios_status)}</td>
-      <td>${statusMiniBadge(row.diagnostico_status)}</td>
-      <td class="error-cell">${escapeHtml(row.fins_error || "")}</td>
-    </tr>`;
-  }).join("");
-
-  const body = `<div class="table-wrap"><table>
-    <thead><tr>
-      <th>#ID</th><th>Timestamp</th><th>FINS</th>
-      <th>Sec</th><th>Mod</th><th>Rel</th><th>Hor</th><th>Diag</th><th>Error</th>
-    </tr></thead>
-    <tbody id="cyclesTableBody">${tbodyRows}</tbody>
-  </table></div>
-  ${historyHasMore ? `<button type="button" class="load-more" id="loadMoreBtn">Cargar más ciclos</button>` : ""}`;
-
-  return renderPanel(
-    "Historial de ciclos",
-    "Clic en una fila para ver las secciones de ese ciclo",
-    body,
-    renderHistoryActions(),
-  );
-}
-
-function renderHistorySecciones() {
-  const ciclo = historyLoadedCiclos.find((c) => c.id === historySelectedCicloId);
+function renderCicloDetail(ciclo, secciones) {
   if (!ciclo) return "";
 
   const ts = formatDateTime(ciclo.timestamp);
+  const plcClockObj = {
+    seg: ciclo.plc_seg,
+    min: ciclo.plc_min,
+    hora: ciclo.plc_hora,
+    dia: ciclo.plc_dia,
+    mes: ciclo.plc_mes,
+    anio: ciclo.plc_anio,
+  };
 
-  if (historySelectedSecciones === null) {
-    return renderPanel(`Ciclo #${historySelectedCicloId}`, `${ts} · cargando…`, renderEmpty("Cargando secciones…"));
+  const metaBlock = `
+    <div class="ciclo-meta">
+      <div class="ciclo-meta-item">
+        <span class="ciclo-meta-label">Reloj PLC</span>
+        <strong class="ciclo-meta-val">${escapeHtml(formatPlcClock(plcClockObj))}</strong>
+      </div>
+      <div class="ciclo-meta-item">
+        <span class="ciclo-meta-label">Fotocelula</span>
+        <div class="ciclo-foto-row">
+          <span>Entrada ${bitBadge(ciclo.fotocelula_entrada)}</span>
+          <span>Mem.fun ${bitBadge(ciclo.fotocelula_mem_fun)}</span>
+          <span>Mem.act ${bitBadge(ciclo.fotocelula_mem_act)}</span>
+        </div>
+      </div>
+    </div>
+  `;
+
+  if (secciones === null) {
+    return renderPanel(`Ciclo #${ciclo.id}`, ts, metaBlock + renderEmpty("Cargando cerchas…"));
   }
 
-  if (!Array.isArray(historySelectedSecciones) || historySelectedSecciones.length === 0) {
-    return renderPanel(
-      `Ciclo #${historySelectedCicloId}`,
-      ts,
-      renderEmpty(historyBlockMessage(ciclo, "secciones", "secciones")),
-      statusMiniBadge(ciclo.secciones_status),
-    );
+  if (!Array.isArray(secciones) || secciones.length === 0) {
+    const msg = ciclo.secciones_status === "failed" ? "Lectura de cerchas fallida en este ciclo."
+      : ciclo.secciones_status === "absent" ? "Bloque de cerchas ausente en este ciclo."
+      : "Sin datos de cerchas para este ciclo.";
+    return renderPanel(`Ciclo #${ciclo.id}`, ts, metaBlock + renderEmpty(msg));
   }
 
-  const rows = normalizeSections(historySelectedSecciones);
-  const activeCount = rows.filter((r) => r.state !== "Sin datos" && r.state !== "Apagada").length;
+  const rows = normalizeSections(secciones);
+  const activeCount = rows.filter((r) => r.css === "state-active").length;
   const gridHtml = rows.map((row) => `
     <button type="button" class="section-cell ${row.css}"
             data-sec-name="${escapeHtml(row.name)}"
@@ -556,53 +623,52 @@ function renderHistorySecciones() {
   `).join("");
 
   return renderPanel(
-    `Ciclo #${historySelectedCicloId}`,
+    `Ciclo #${ciclo.id}`,
     `${ts} · ${activeCount} activas`,
-    `<div class="section-grid" id="historySecGrid">${gridHtml}</div>`,
+    metaBlock + `<div class="section-grid" id="historySecGrid">${gridHtml}</div>`,
   );
 }
 
-function renderHistoryHorarios() {
-  const ciclo = historyLoadedCiclos.find((c) => c.id === historySelectedCicloId);
-  if (!ciclo) return "";
+function renderHistoryActions() {
+  return `<button type="button" class="history-refresh" id="refreshHistoryBtn">Actualizar</button>
+    <span class="badge neutral">${historyLoadedCiclos.length} ciclos</span>`;
+}
 
-  const ts = formatDateTime(ciclo.timestamp);
-
-  if (historySelectedHorarios === null) {
-    return renderPanel(`Horarios ciclo #${historySelectedCicloId}`, ts, renderEmpty("Cargando horarios…"));
-  }
-
-  if (!Array.isArray(historySelectedHorarios) || historySelectedHorarios.length === 0) {
+function renderCiclosPanel() {
+  if (!historyLoadedCiclos.length) {
     return renderPanel(
-      `Horarios ciclo #${historySelectedCicloId}`,
-      ts,
-      renderEmpty(historyBlockMessage(ciclo, "horarios", "horarios")),
-      statusMiniBadge(ciclo.horarios_status),
+      "Historial de ciclos",
+      "Clic en una fila para ver las cerchas de ese ciclo",
+      renderEmpty("Sin historial de ciclos disponible."),
+      renderHistoryActions(),
     );
   }
 
-  const body = `<div class="notice warn">
-      Horarios mostrados como valores raw. Semantica D1000/D3632 pendiente.
-    </div>
-    <div class="table-wrap"><table>
-      <thead><tr><th>Tramo</th><th>Inicio raw</th><th>Fin raw</th><th>Timestamp</th></tr></thead>
-      <tbody>
-        ${historySelectedHorarios.map((row) => `
-          <tr>
-            <td class="mono">${escapeHtml(row?.tramo_id ?? "-")}</td>
-            <td class="mono">${escapeHtml(row?.inicio_raw ?? "-")}</td>
-            <td class="mono">${escapeHtml(row?.fin_raw ?? "-")}</td>
-            <td class="mono">${escapeHtml(formatDateTime(getTimestamp(row)))}</td>
-          </tr>
-        `).join("")}
-      </tbody>
-    </table></div>`;
+  const tbodyRows = historyLoadedCiclos.map((row) => {
+    const isActive = row.id === historySelectedCicloId;
+    return `<tr class="cycle-row${isActive ? " active" : ""}" data-ciclo-id="${row.id}">
+      <td class="mono">${escapeHtml(row.id)}</td>
+      <td class="mono">${escapeHtml(formatDateTime(row.timestamp))}</td>
+    </tr>`;
+  }).join("");
 
-  return renderPanel(`Horarios ciclo #${historySelectedCicloId}`, ts, body);
+  const body = `<div class="table-wrap"><table>
+    <thead><tr><th>#ID</th><th>Timestamp</th></tr></thead>
+    <tbody id="cyclesTableBody">${tbodyRows}</tbody>
+  </table></div>
+  ${historyHasMore ? `<button type="button" class="load-more" id="loadMoreBtn">Cargar más ciclos</button>` : ""}`;
+
+  return renderPanel(
+    "Ciclos",
+    "Selecciona un ciclo para ver cerchas, fotocelula y reloj",
+    body,
+    renderHistoryActions(),
+  );
 }
 
 function renderHistorialView() {
-  view.innerHTML = renderCiclosPanel() + renderHistorySecciones() + renderHistoryHorarios();
+  const ciclo = historyLoadedCiclos.find((c) => c.id === historySelectedCicloId) ?? null;
+  view.innerHTML = renderCiclosPanel() + renderCicloDetail(ciclo, historySelectedSecciones);
 
   document.getElementById("cyclesTableBody")?.addEventListener("click", (e) => {
     const row = e.target.closest(".cycle-row");
@@ -618,7 +684,7 @@ function renderHistorialView() {
     if (!cell) return;
     document.querySelectorAll("#historySecGrid .section-cell.selected").forEach((c) => c.classList.remove("selected"));
     cell.classList.add("selected");
-    setDetail("Sección (hist.)", cell.dataset.secName, cell.dataset.secState, cell.dataset.secTs);
+    setDetail("Cercha (hist.)", cell.dataset.secName, cell.dataset.secState, cell.dataset.secTs);
   });
 }
 
@@ -626,23 +692,30 @@ async function selectHistoryCiclo(cicloId) {
   const ciclo = historyLoadedCiclos.find((c) => c.id === cicloId);
   historySelectedCicloId = cicloId;
   historySelectedSecciones = null;
-  historySelectedHorarios = null;
-  setDetail("Ciclo", `#${cicloId}`, ciclo?.fins_ok ? "FINS OK" : "Parcial/Fallo", formatDateTime(ciclo?.timestamp));
+  setDetail("Ciclo", `#${cicloId}`, "Cargando…", formatDateTime(ciclo?.timestamp));
   renderHistorialView();
+
   const requestedId = cicloId;
+  const shouldFetch = ciclo?.secciones_status === "ok";
+  const secResult = shouldFetch
+    ? await fetchJson(`${endpoints.historialSecciones}?ciclo_id=${cicloId}&limit=112`)
+    : null;
 
-  const secFetch = ciclo?.secciones_status === "ok"
-    ? fetchJson(`${endpoints.historialSecciones}?ciclo_id=${cicloId}&limit=112`)
-    : Promise.resolve(null);
-  const horFetch = ciclo?.horarios_status === "ok"
-    ? fetchJson(`${endpoints.historialHorarios}?ciclo_id=${cicloId}&limit=50`)
-    : Promise.resolve(null);
-
-  const [secResult, horResult] = await Promise.all([secFetch, horFetch]);
   if (historySelectedCicloId !== requestedId) return;
 
   historySelectedSecciones = secResult === null ? [] : (secResult.ok ? asRows(secResult.data) : []);
-  historySelectedHorarios = horResult === null ? [] : (horResult.ok ? asRows(horResult.data) : []);
+
+  // Fix #5: estado claro cuando no hay secciones disponibles
+  let stateText;
+  if (!shouldFetch) {
+    stateText = `Sin dato (${ciclo?.secciones_status ?? "sin status"})`;
+  } else {
+    const rows = historySelectedSecciones.length ? normalizeSections(historySelectedSecciones) : [];
+    const activeCount = rows.filter((r) => r.css === "state-active").length;
+    stateText = `${activeCount} cerchas activas`;
+  }
+  setDetail("Ciclo", `#${cicloId}`, stateText, formatDateTime(ciclo?.timestamp));
+
   renderHistorialView();
 }
 
@@ -651,7 +724,6 @@ async function loadHistorialCiclos(reset = false) {
     historyLoadedCiclos = [];
     historySelectedCicloId = null;
     historySelectedSecciones = null;
-    historySelectedHorarios = null;
     historyHasMore = false;
     historyAnchorTs = null;
     setDetail("-", "-", "-", "-");
@@ -678,7 +750,6 @@ async function loadHistorialCiclos(reset = false) {
 }
 
 async function showHistorial() {
-  await fetchSummary();
   if (historyLoadedCiclos.length === 0) {
     await loadHistorialCiclos(true);
   } else {
@@ -686,14 +757,12 @@ async function showHistorial() {
   }
 }
 
-async function showDiagnostico() {
+async function showTecnico() {
   const checks = await Promise.all(Object.entries(endpoints).map(async ([name, path]) => {
     const result = await fetchJson(path);
     return [name, path, result];
   }));
   const summaryResult = checks.find(([name]) => name === "resumen")?.[2] ?? { ok: false };
-  updateHeader(summaryResult);
-
   const summary = summaryResult.ok ? summaryResult.data : null;
   const blockRows = summary
     ? Object.entries(summary.bloques).map(([name, block]) => `
@@ -720,7 +789,7 @@ async function showDiagnostico() {
         <tbody>${blockRows}</tbody>
       </table></div>
     ` : renderEmpty("Sin resumen disponible.")) +
-    renderPanel("Diagnostico API", "Comprobacion pasiva de endpoints read-only", `
+    renderPanel("Contrato API", "Comprobacion pasiva de endpoints read-only", `
       <div class="table-wrap"><table>
         <thead><tr><th>Recurso</th><th>Endpoint</th><th>Estado</th></tr></thead>
         <tbody>${endpointRows}</tbody>
@@ -737,31 +806,81 @@ async function showDiagnostico() {
 const views = {
   resumen: showResumen,
   secciones: showSecciones,
-  horarios: showHorarios,
   historial: showHistorial,
-  diagnostico: showDiagnostico,
+  tecnico: showTecnico,
 };
 
+const DETAIL_VIEWS = new Set(["secciones", "historial"]);
+
+async function switchView(nextView) {
+  if (!views[nextView]) return;
+  document.querySelectorAll(".tab").forEach((tab) => {
+    tab.classList.toggle("active", tab.dataset.view === nextView);
+  });
+  activeView = nextView;
+  mainLayout.classList.toggle("has-detail", DETAIL_VIEWS.has(nextView));
+  await renderActive();
+  view.focus({ preventScroll: true });
+}
+
+// Fix #1: preservar scroll de ventana y celda seleccionada en auto-refresco
 async function renderActive() {
   clearTimeout(refreshTimer);
+
+  const isViewSwitch = currentViewRendered !== activeView;
+
+  // En cambio de vista: mostrar skeleton. En auto-refresco: conservar estado.
+  const savedScroll = isViewSwitch ? 0 : window.scrollY;
+  const savedSelectionName = isViewSwitch
+    ? null
+    : document.querySelector(".section-cell.selected")?.querySelector(".section-name")?.textContent ?? null;
+
+  if (isViewSwitch) {
+    view.innerHTML = SKELETON;
+  }
+
   view.setAttribute("aria-busy", "true");
+  if (refreshBtn) {
+    refreshBtn.disabled = true;
+    refreshBtn.dataset.refreshing = "true";
+  }
+
   try {
     await views[activeView]();
+    currentViewRendered = activeView;
   } finally {
+    // Restaurar posición de scroll de ventana
+    window.scrollTo({ top: savedScroll, behavior: "instant" });
+
+    // Restaurar selección de cercha si había una
+    if (savedSelectionName) {
+      document.querySelectorAll(".section-cell").forEach((cell) => {
+        if (cell.querySelector(".section-name")?.textContent === savedSelectionName) {
+          cell.classList.add("selected");
+        }
+      });
+    }
+
     view.setAttribute("aria-busy", "false");
+    if (refreshBtn) {
+      refreshBtn.disabled = false;
+      refreshBtn.dataset.refreshing = "false";
+    }
     if (activeView !== "historial") {
-      refreshTimer = setTimeout(renderActive, activeView === "resumen" ? 5000 : 10000);
+      refreshTimer = setTimeout(renderActive, activeView === "resumen" ? 3000 : 5000);
     }
   }
 }
 
 document.querySelectorAll(".tab").forEach((button) => {
   button.addEventListener("click", () => {
-    document.querySelectorAll(".tab").forEach((tab) => tab.classList.remove("active"));
-    button.classList.add("active");
-    activeView = button.dataset.view;
-    renderActive();
+    switchView(button.dataset.view);
   });
+});
+
+refreshBtn?.addEventListener("click", () => {
+  clearTimeout(refreshTimer);
+  renderActive();
 });
 
 renderActive();

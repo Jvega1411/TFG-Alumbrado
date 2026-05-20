@@ -10,64 +10,38 @@
   <a class="skip-link" href="#view">Saltar al contenido</a>
 
   <div class="shell">
-    <header class="topbar" aria-label="Estado operativo">
-      <div class="brand">
-        <img src="/static/Logo.png" alt="TVITEC CRICURSA" class="logo">
-        <div>
-          <h1>Alumbrado TVITEC</h1>
-          <p>Supervision industrial read-only</p>
-        </div>
-      </div>
-
-      <div class="status-strip" aria-live="polite">
-        <div class="status-item">
-          <span>API</span>
-          <strong id="apiStatus">PENDIENTE</strong>
-        </div>
-        <div class="status-item">
-          <span>FINS</span>
-          <strong id="finsStatus">PENDIENTE</strong>
-        </div>
-        <div class="status-item">
-          <span>Frescura</span>
-          <strong id="freshnessStatus">-</strong>
-        </div>
-        <div class="status-item">
-          <span>Modo</span>
-          <strong id="capabilityStatus">READ-ONLY</strong>
+    <header class="topbar" aria-label="Cabecera operativa">
+      <div class="topbar-main">
+        <div class="brand">
+          <img src="/static/Logo.png" alt="TVITEC CRICURSA" class="logo">
+          <div>
+            <h1>Alumbrado TVITEC</h1>
+            <p>Consola read-only</p>
+          </div>
         </div>
       </div>
     </header>
 
-    <section class="timebar" aria-label="Relojes del sistema">
-      <div>
-        <span>Timestamp RPi</span>
-        <strong id="rpiClock">-</strong>
-      </div>
-      <div>
-        <span>Reloj PLC</span>
-        <strong id="plcClock">-</strong>
-      </div>
-      <div>
-        <span>Ultima actualizacion UI</span>
-        <strong id="uiClock">-</strong>
-      </div>
-    </section>
-
     <nav class="tabs" aria-label="Vistas del dashboard">
-      <button class="tab active" type="button" data-view="resumen">Resumen</button>
+      <button class="tab active" type="button" data-view="resumen">Consola</button>
       <button class="tab" type="button" data-view="secciones">Secciones</button>
-      <button class="tab" type="button" data-view="horarios">Horarios</button>
       <button class="tab" type="button" data-view="historial">Historial</button>
-      <button class="tab" type="button" data-view="diagnostico">Diagnostico</button>
+      <button class="tab" type="button" data-view="tecnico">Tecnico</button>
+      <button class="refresh-btn" id="refreshBtn" type="button" aria-label="Refrescar datos ahora">
+        <svg class="refresh-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M2 4a7 7 0 0 1 12 3"/><polyline points="2 1 2 4 5 4"/>
+          <path d="M14 12a7 7 0 0 1-12-3"/><polyline points="14 15 14 12 11 12"/>
+        </svg>
+        <span class="refresh-label">Refrescar</span>
+      </button>
     </nav>
 
-    <main class="layout">
-      <section class="workspace" id="view" tabindex="-1"></section>
+    <main class="layout" id="mainLayout">
+      <section class="workspace" id="view" tabindex="-1" aria-live="polite" aria-atomic="false"></section>
 
       <aside class="detail" aria-label="Detalle seleccionado">
         <div class="detail-head">
-          <h2>Detalle</h2>
+          <h2 id="detailHeading">Detalle</h2>
           <button id="clearDetail" type="button">Limpiar</button>
         </div>
         <dl>
