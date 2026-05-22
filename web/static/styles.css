@@ -1,19 +1,19 @@
 :root {
   color-scheme: light;
-  --bg: #eef3f4;
+  --bg: #eef7f9;
   --panel: #ffffff;
-  --panel-soft: #f7fafb;
-  --text: #10252a;
-  --muted: #5f7077;
-  --line: #d5e0e3;
-  --teal: #008fa3;
-  --teal-dark: #006d7d;
-  --orange: #f26b21;
+  --panel-soft: #f7fbfc;
+  --text: #061f24;
+  --muted: #566d73;
+  --line: #d6e7eb;
+  --teal: #0094B3;
+  --teal-dark: #00586b;
+  --orange: #FF6D22;
   --ok: #146c3e;
   --warn: #9a5a00;
-  --bad: #b42318;
-  --off: #5f7077;
-  --shadow: 0 10px 24px rgba(16, 37, 42, 0.08);
+  --bad: #d71920;
+  --off: #566d73;
+  --shadow: 0 10px 24px rgba(0, 40, 48, 0.09);
 }
 
 * {
@@ -38,7 +38,7 @@ button {
 
 button:focus-visible,
 a:focus-visible {
-  outline: 3px solid rgba(242, 107, 33, 0.75);
+  outline: 3px solid rgba(255, 109, 34, 0.78);
   outline-offset: 2px;
 }
 
@@ -97,8 +97,8 @@ a:focus-visible {
 }
 
 .logo {
-  width: 122px;
-  height: 46px;
+  width: 280px;
+  height: 78px;
   object-fit: contain;
   flex: 0 0 auto;
 }
@@ -191,6 +191,7 @@ h1 {
   min-height: 44px;
   padding: 9px 14px;
   border: 1px solid var(--line);
+  border-bottom-width: 3px;
   border-radius: 8px;
   background: var(--panel);
   color: var(--text);
@@ -199,10 +200,19 @@ h1 {
   white-space: nowrap;
 }
 
+.tab:hover,
+.detail button:hover {
+  border-color: #9acfd8;
+  border-bottom-color: var(--teal);
+  background: #f0f8fa;
+  color: var(--teal-dark);
+}
+
 .tab.active {
-  background: var(--teal-dark);
-  border-color: var(--teal-dark);
-  color: #ffffff;
+  background: var(--panel);
+  border-color: #9acfd8;
+  border-bottom-color: var(--orange);
+  color: var(--teal-dark);
 }
 
 .ops-hero {
@@ -403,8 +413,8 @@ h1 {
 }
 
 .filter-chip.active {
-  border-color: var(--teal-dark);
-  background: var(--teal-dark);
+  border-color: var(--teal);
+  background: var(--teal);
   color: #ffffff;
 }
 
@@ -699,8 +709,8 @@ th {
   }
 
   .logo {
-    width: 96px;
-    height: 38px;
+    width: 180px;
+    height: 56px;
   }
 
   h1 {
@@ -835,12 +845,12 @@ th {
 }
 
 .cycle-row.active td {
-  background: #edf8fa;
-  border-bottom-color: #9acfd8;
+  background: #fff1e8;
+  border-bottom-color: rgba(255, 109, 34, 0.45);
 }
 
 .cycle-row.active td:first-child {
-  box-shadow: inset 3px 0 0 var(--teal-dark);
+  box-shadow: inset 4px 0 0 var(--orange);
 }
 
 .mini-badge {
@@ -918,6 +928,15 @@ th {
   overflow-wrap: anywhere;
 }
 
+.sys-status-row.merged {
+  margin-top: 12px;
+}
+
+.sys-clocks.merged {
+  margin-top: 8px;
+  margin-bottom: 0;
+}
+
 .sys-blocks {
   border-top: 1px solid var(--line);
   padding-top: 10px;
@@ -967,65 +986,16 @@ th {
   color: var(--muted);
 }
 
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-.refresh-btn {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 44px;
-  padding: 9px 14px;
-  border: 1px solid #9acfd8;
-  border-radius: 8px;
-  background: var(--panel);
-  color: var(--teal-dark);
-  cursor: pointer;
-  font-weight: 800;
-  white-space: nowrap;
-  transition: background 0.12s, color 0.12s, border-color 0.12s;
-}
-
-.refresh-btn:hover:not(:disabled) {
-  background: var(--teal-dark);
-  border-color: var(--teal-dark);
-  color: #ffffff;
-}
-
-.refresh-btn:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.refresh-icon {
-  display: inline-block;
-  flex-shrink: 0;
-  transform-origin: center;
-  vertical-align: middle;
-}
-
-.refresh-btn[data-refreshing="true"] .refresh-icon {
-  animation: spin 0.7s linear infinite;
-}
-
-@media (max-width: 600px) {
-  .refresh-label {
-    display: none;
-  }
-}
-
 .load-more,
 .history-refresh {
   display: block;
   padding: 10px;
-  border: 1px dashed var(--line);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--panel-soft);
-  color: var(--muted);
+  background: var(--panel);
+  color: var(--text);
   cursor: pointer;
-  font-weight: 700;
+  font-weight: 850;
   font-size: 13px;
 }
 
@@ -1052,6 +1022,28 @@ th {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.diag-summary {
+  display: list-item;
+  cursor: pointer;
+  padding: 16px;
+  font-weight: 800;
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.diag-summary:focus-visible {
+  outline: 3px solid var(--teal);
+  outline-offset: -3px;
+}
+
+.diag-body {
+  padding: 0 16px 16px;
+}
+
+.diag-endpoints {
+  margin-top: 14px;
 }
 
 /* ── Skeleton loading ──────────────────────────────────────────────── */

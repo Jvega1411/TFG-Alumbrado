@@ -1,3 +1,4 @@
+// --- CONSTANTS ------------------------------------------------------------
 const SECTION_COUNT = 112;
 
 const endpoints = {
@@ -10,6 +11,8 @@ const endpoints = {
   historialHorarios: "/api/historial/horarios",
 };
 
+const DIAGNOSTIC_ENDPOINTS = ["resumen", "estado", "secciones", "horarios"];
+
 // SVG icons — consistentes entre OS/fuentes a diferencia de caracteres Unicode
 const ICON_CHECK = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="1.5 5 4 7.5 8.5 2"/></svg>`;
 const ICON_CROSS = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><line x1="2" y1="2" x2="8" y2="8"/><line x1="8" y1="2" x2="2" y2="8"/></svg>`;
@@ -19,18 +22,10 @@ const SKELETON = `<div class="skeleton-panel"></div><div class="skeleton-panel">
 
 const STALE_WARN_S = 7200;   // 2h → aviso amarillo
 const STALE_CRIT_S = 86400;  // 24h → aviso rojo
+const REFRESH_INTERVALS = { estado: 3000, secciones: 5000 };
 
-const view = document.getElementById("view");
-const mainLayout = document.getElementById("mainLayout");
-const detailHeading = document.getElementById("detailHeading");
-const detailName = document.getElementById("detailName");
-const detailType = document.getElementById("detailType");
-const detailState = document.getElementById("detailState");
-const detailTs = document.getElementById("detailTs");
-const clearDetail = document.getElementById("clearDetail");
-const refreshBtn = document.getElementById("refreshBtn");
-
-let activeView = "resumen";
+// --- STATE ----------------------------------------------------------------
+let activeView = "estado";
 let currentViewRendered = null;
 let refreshTimer = null;
 let historySelectedCicloId = null;
@@ -41,7 +36,11 @@ let historySelectedSecciones = null;
 let sectionFilterState = "all";
 let sectionSearchTerm = "";
 let sectionSearchTimer = null;
+let diagnosticoOpen = false;
+let diagnosticoChecks = null;
+let diagnosticoChecksPromise = null;
 
+// --- UTILITIES ------------------------------------------------------------
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -73,11 +72,7 @@ function clearSelection() {
   });
 }
 
-clearDetail.addEventListener("click", () => {
-  setDetail("-", "-", "-", "-");
-  clearSelection();
-});
-
+// --- API ------------------------------------------------------------------
 async function fetchJson(path) {
   try {
     const response = await fetch(path, { headers: { Accept: "application/json" } });
@@ -96,6 +91,20 @@ async function fetchJson(path) {
   }
 }
 
+async function fetchSummary() {
+  return fetchJson(endpoints.resumen);
+}
+
+async function fetchEndpointChecks() {
+  return Promise.all(
+    DIAGNOSTIC_ENDPOINTS.map(async (name) => {
+      const result = await fetchJson(endpoints[name]);
+      return [name, endpoints[name], result];
+    }),
+  );
+}
+
+// --- RENDER HELPERS -------------------------------------------------------
 function asRows(data) {
   if (Array.isArray(data)) return data;
   if (Array.isArray(data?.items)) return data.items;
@@ -128,6 +137,27 @@ function formatDateTime(value) {
     minute: "2-digit",
     second: "2-digit",
   }).format(date);
+}
+
+function formatSpainDateTime(value) {
+  if (!value) return "-";
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  const formatted = new Intl.DateTimeFormat("es-ES", {
+    timeZone: "Europe/Madrid",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(date);
+  const offset = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Europe/Madrid",
+    timeZoneName: "shortOffset",
+    hour: "2-digit",
+  }).formatToParts(date).find((part) => part.type === "timeZoneName")?.value.replace("GMT", "UTC");
+  return offset ? `${formatted} (${offset})` : formatted;
 }
 
 function formatAge(seconds) {
@@ -197,6 +227,7 @@ function blockBadge(summary, block) {
   return badge("SIN ESTADO", "warn");
 }
 
+// --- DOMAIN ---------------------------------------------------------------
 function sectionClass(row) {
   if (row.css === "state-active") return "active";
   if (row.css === "state-off") return "off";
@@ -226,7 +257,7 @@ function anomalyItems(summary, seccionesResult, horariosResult) {
   }
   const fins = finsState(summary);
   if (fins.label !== "OK") {
-    items.push([`FINS ${fins.label}`, summary?.fins_error || "Hay bloques de lectura parciales o fallidos."]);
+    items.push([`FINS ${fins.label}`, summary?.fins_error || "Uno o mas bloques FINS no estan en estado OK."]);
   }
   if (summary?.diagnostico?.cycle_time_error) items.push(["PLC cycle time", "El diagnostico PLC marca error de tiempo de ciclo."]);
   if (summary?.diagnostico?.low_battery) items.push(["Bateria PLC", "El diagnostico PLC marca bateria baja."]);
@@ -252,13 +283,12 @@ function finsState(summary) {
   return { label: "FALLO", cls: "bad" };
 }
 
-function renderPanel(title, sub, body, right = "") {
+function renderPanel(title, body, right = "") {
   return `
     <section class="panel">
       <div class="panel-head">
         <div>
           <h2>${escapeHtml(title)}</h2>
-          <p class="sub">${escapeHtml(sub)}</p>
         </div>
         <div class="panel-action">${right}</div>
       </div>
@@ -354,59 +384,46 @@ function normalizeSection(index, name, item) {
   };
 }
 
-async function fetchSummary() {
-  return fetchJson(endpoints.resumen);
+// --- VIEWS ----------------------------------------------------------------
+function renderDiagnosticoBody(summary, checks) {
+  const blockRows = Object.entries(summary?.bloques ?? {}).map(([name, block]) => `
+        <tr>
+          <td>${escapeHtml(name)}</td>
+          <td>${blockBadge(summary, name)}</td>
+          <td>${escapeHtml(block?.error || "-")}</td>
+        </tr>
+      `).join("");
+
+  const endpointRows = checks.map(([name, path, result]) => `
+    <tr>
+      <td>${escapeHtml(name)}</td>
+      <td class="mono">${escapeHtml(path)}</td>
+      <td>${endpointState(result)}</td>
+    </tr>
+  `).join("");
+
+  return `
+    ${summary && blockRows
+      ? `<div class="table-wrap"><table>
+           <thead><tr><th>Bloque</th><th>Estado</th><th>Error</th></tr></thead>
+           <tbody>${blockRows}</tbody>
+         </table></div>`
+      : renderEmpty("Sin resumen disponible.")}
+    <div class="table-wrap diag-endpoints"><table>
+      <thead><tr><th>Recurso</th><th>Endpoint</th><th>Estado</th></tr></thead>
+      <tbody>${endpointRows}</tbody>
+    </table></div>
+  `;
 }
 
-function renderSistemaPanel(summaryResult) {
-  if (!summaryResult.ok) {
-    return renderPanel(
-      "Sistema",
-      "Estado de conectividad y lectura",
-      renderEmpty("Sin datos del sistema disponibles."),
-      endpointState(summaryResult),
-    );
-  }
-  const summary = summaryResult.data;
-  const fins = finsState(summary);
-  const age = summary?.frescura?.age_seconds;
-
-  let freshnessHtml;
-  if (age !== null && age !== undefined && age < 0) {
-    freshnessHtml = badge("TS FUTURO", "bad");
-  } else if (age >= STALE_CRIT_S) {
-    freshnessHtml = badge(`CAIDO ${formatAge(age)}`, "bad");
-  } else if (age >= STALE_WARN_S) {
-    freshnessHtml = badge(`ANTIGUO ${formatAge(age)}`, "warn");
-  } else {
-    freshnessHtml = badge(formatAge(age), "ok");
-  }
-
-  return renderPanel(
-    "Sistema",
-    "Estado de conectividad y bloques de lectura",
-    `<div class="sys-status-row">
-      ${badge("API OK", "ok")}
-      ${badge(`FINS ${fins.label}`, fins.cls)}
-      ${freshnessHtml}
-      ${badge(summary.capabilities.mode.toUpperCase(), "neutral")}
-    </div>
-    <div class="sys-clocks">
-      <div><span>RPi</span><strong>${escapeHtml(formatDateTime(summary.timestamp_rpi))}</strong></div>
-      <div><span>PLC</span><strong>${escapeHtml(formatPlcClock(summary.plc_reloj))}</strong></div>
-      <div><span>UI</span><strong>${escapeHtml(formatDateTime(new Date()))}</strong></div>
-    </div>
-    <div class="sys-blocks">
-      ${renderKeyValues([
-        ["Secciones", blockBadge(summary, "secciones")],
-        ["Modo", blockBadge(summary, "modo")],
-        ["Fotocelula", blockBadge(summary, "fotocelula")],
-        ["Reloj PLC", blockBadge(summary, "reloj")],
-        ["Horarios", blockBadge(summary, "horarios")],
-        ["Diagnostico", blockBadge(summary, "diagnostico")],
-      ])}
-    </div>`,
-  );
+function renderDiagnosticoSection(summary) {
+  const body = diagnosticoChecks
+    ? renderDiagnosticoBody(summary, diagnosticoChecks)
+    : `<p class="empty">Cargando...</p>`;
+  return `<details class="panel" data-diagnostico${diagnosticoOpen ? " open" : ""}>
+    <summary class="diag-summary">Diagnóstico</summary>
+    <div class="diag-body">${body}</div>
+  </details>`;
 }
 
 async function showResumen() {
@@ -418,8 +435,7 @@ async function showResumen() {
 
   if (!summaryResult.ok) {
     view.innerHTML = renderPanel(
-      "Resumen",
-      "No hay ciclo disponible todavia",
+      "Estado",
       renderEmpty("La API responde, pero aun no existe un ciclo persistido en SQLite."),
       endpointState(summaryResult),
     );
@@ -437,13 +453,17 @@ async function showResumen() {
     : age >= STALE_CRIT_S ? "Sin datos en mas de 24h"
     : age >= STALE_WARN_S ? "Dato antiguo (mas de 2h)"
     : "Dentro del umbral";
+  const freshnessHtml = age !== null && age !== undefined && age < 0 ? badge("TS FUTURO", "bad")
+    : age >= STALE_CRIT_S ? badge(`CAIDO ${formatAge(age)}`, "bad")
+    : age >= STALE_WARN_S ? badge(`ANTIGUO ${formatAge(age)}`, "warn")
+    : badge(formatAge(age), "ok");
   const anomalies = anomalyItems(summary, seccionesResult, horariosResult);
   const isCritical = age !== null && age !== undefined && (age < 0 || age >= STALE_CRIT_S);
   const healthClass = isCritical ? "bad" : (anomalies.length ? "warn" : "ok");
   const healthLabel = anomalies.length ? `${anomalies.length} avisos` : "Sin avisos";
 
   view.innerHTML =
-    renderPanel("Consola operativa", "Lectura read-only del ultimo ciclo persistido", `
+    renderPanel("Estado", `
       <div class="ops-hero ${healthClass}">
         <div class="ops-primary">
           <span>Estado de datos</span>
@@ -453,12 +473,31 @@ async function showResumen() {
         <div class="ops-kpis">
           ${metric("FINS", badge(fins.label, fins.cls), summary.fins_error || "Sin error global")}
           ${metric("Frescura", escapeHtml(formatAge(age)), freshnessHint)}
-          ${metric("Secciones activas", escapeHtml(String(activeCount)), `${counters.apagadas} apagadas / ${counters.con_dato} con dato`)}
-          ${metric("Modo", badge("READ-ONLY", "neutral"), "Sin mandos ni escrituras FINS")}
+          ${metric("Secciones activas", escapeHtml(String(activeCount)), `${counters.apagadas} apagadas`)}
         </div>
       </div>
-    `, badge(summary.capabilities.mode.toUpperCase(), "neutral")) +
-    renderPanel("Avisos", "Prioridad operativa antes de entrar al detalle", anomalies.length
+      <div class="sys-status-row merged">
+        ${badge("API OK", "ok")}
+        ${badge(`FINS ${fins.label}`, fins.cls)}
+        ${freshnessHtml}
+      </div>
+      <div class="sys-clocks merged">
+        <div><span>RPi</span><strong>${escapeHtml(formatDateTime(summary.timestamp_rpi))}</strong></div>
+        <div><span>PLC</span><strong>${escapeHtml(formatPlcClock(summary.plc_reloj))}</strong></div>
+        <div><span>UI</span><strong>${escapeHtml(formatDateTime(new Date()))}</strong></div>
+      </div>
+      <div class="sys-blocks">
+        ${renderKeyValues([
+          ["Secciones", blockBadge(summary, "secciones")],
+          ["Modo", blockBadge(summary, "modo")],
+          ["Fotocelula", blockBadge(summary, "fotocelula")],
+          ["Reloj PLC", blockBadge(summary, "reloj")],
+          ["Horarios", blockBadge(summary, "horarios")],
+          ["Diagnostico", blockBadge(summary, "diagnostico")],
+        ])}
+      </div>
+    `) +
+    renderPanel("Avisos", anomalies.length
       ? `<div class="alert-list">${anomalies.map(([title, text]) => `
           <div class="alert-item">
             <strong>${escapeHtml(title)}</strong>
@@ -466,7 +505,7 @@ async function showResumen() {
           </div>
         `).join("")}</div>`
       : `<div class="empty success">No hay anomalias operativas en la ultima lectura.</div>`) +
-    renderPanel("Secciones", "Resumen de las 112 secciones de alumbrado", `
+    renderPanel("Secciones", `
       <div class="section-summary">
         ${metric("Activas", escapeHtml(String(counts.active)), "Auto, manual u horario")}
         ${metric("Apagadas", escapeHtml(String(counts.off)), "Fila valida con flags falsos")}
@@ -476,18 +515,14 @@ async function showResumen() {
       <div class="console-actions">
         <button type="button" class="secondary-action" data-jump="secciones">Abrir secciones</button>
         <button type="button" class="secondary-action" data-jump="historial">Ver historial</button>
-        <button type="button" class="secondary-action" data-jump="tecnico">Diagnostico tecnico</button>
+        <button type="button" class="secondary-action" data-open-diagnostico>Diagnóstico</button>
       </div>
     `, `${endpointState(seccionesResult)} ${badge(`${counters.con_dato}/${counters.total} con dato`, "neutral")}`) +
-    renderSistemaPanel(summaryResult);
-
-  document.querySelectorAll("[data-jump]").forEach((button) => {
-    button.addEventListener("click", () => switchView(button.dataset.jump));
-  });
+    renderDiagnosticoSection(summary);
 }
 
 async function showSecciones() {
-  if (!["all", "active", "off", "bad"].includes(sectionFilterState)) {
+  if (!["all", "active", "off"].includes(sectionFilterState)) {
     sectionFilterState = "all";
   }
   const [summaryResult, result] = await Promise.all([
@@ -506,7 +541,6 @@ async function showSecciones() {
 
   view.innerHTML = renderPanel(
     "Secciones",
-    "Apagada significa fila valida con flags falsos.",
     result.ok
       ? `<div class="section-tools">
           <div class="filter-group" aria-label="Filtro de secciones">
@@ -514,7 +548,6 @@ async function showSecciones() {
               ["all", `Todas ${counts.total}`],
               ["active", `Activas ${counts.active}`],
               ["off", `Apagadas ${counts.off}`],
-              ["bad", `Fallos ${counts.bad}`],
             ].map(([value, label]) => `
               <button type="button" class="filter-chip${sectionFilterState === value ? " active" : ""}" data-section-filter="${value}">
                 ${escapeHtml(label)}
@@ -541,34 +574,14 @@ async function showSecciones() {
     cell.type = "button";
     cell.className = `section-cell ${row.css}`;
     cell.setAttribute("aria-label", `${row.name}: ${row.state}`);
+    cell.dataset.secName = row.name;
+    cell.dataset.secState = row.state;
+    cell.dataset.secTs = formatDateTime(row.ts);
     cell.innerHTML = `
       <div class="section-name">${escapeHtml(row.name)}</div>
       <div class="section-state">${escapeHtml(row.state)}</div>
     `;
-    cell.addEventListener("click", () => {
-      clearSelection();
-      cell.classList.add("selected");
-      setDetail("Seccion", row.name, row.state, formatDateTime(row.ts));
-    });
     grid.appendChild(cell);
-  });
-
-  document.querySelectorAll("[data-section-filter]").forEach((button) => {
-    button.addEventListener("click", () => {
-      sectionFilterState = button.dataset.sectionFilter;
-      showSecciones();
-    });
-  });
-
-  document.getElementById("sectionSearch")?.addEventListener("input", (event) => {
-    sectionSearchTerm = event.target.value;
-    clearTimeout(sectionSearchTimer);
-    sectionSearchTimer = setTimeout(async () => {
-      await showSecciones();
-      const input = document.getElementById("sectionSearch");
-      input?.focus();
-      input?.setSelectionRange(sectionSearchTerm.length, sectionSearchTerm.length);
-    }, 180);
   });
 }
 
@@ -580,7 +593,7 @@ function bitBadge(val) {
 function renderCicloDetail(ciclo, secciones) {
   if (!ciclo) return "";
 
-  const ts = formatDateTime(ciclo.timestamp);
+  const ts = formatSpainDateTime(ciclo.timestamp);
   const plcClockObj = {
     seg: ciclo.plc_seg,
     min: ciclo.plc_min,
@@ -608,14 +621,20 @@ function renderCicloDetail(ciclo, secciones) {
   `;
 
   if (secciones === null) {
-    return renderPanel(`Ciclo #${ciclo.id}`, ts, metaBlock + renderEmpty("Cargando cerchas…"));
+    return renderPanel(
+      ts,
+      `<p class="sub">Ciclo #${escapeHtml(ciclo.id)}</p>` + metaBlock + renderEmpty("Cargando cerchas..."),
+    );
   }
 
   if (!Array.isArray(secciones) || secciones.length === 0) {
     const msg = ciclo.secciones_status === "failed" ? "Lectura de cerchas fallida en este ciclo."
       : ciclo.secciones_status === "absent" ? "Bloque de cerchas ausente en este ciclo."
       : "Sin datos de cerchas para este ciclo.";
-    return renderPanel(`Ciclo #${ciclo.id}`, ts, metaBlock + renderEmpty(msg));
+    return renderPanel(
+      ts,
+      `<p class="sub">Ciclo #${escapeHtml(ciclo.id)}</p>` + metaBlock + renderEmpty(msg),
+    );
   }
 
   const rows = normalizeSections(secciones);
@@ -632,8 +651,8 @@ function renderCicloDetail(ciclo, secciones) {
   `).join("");
 
   return renderPanel(
-    `Ciclo #${ciclo.id}`,
-    `${ts} · ${activeCount} activas`,
+    ts,
+    `<p class="sub">Ciclo #${escapeHtml(ciclo.id)} · ${escapeHtml(String(activeCount))} activas</p>` +
     metaBlock + `<div class="section-grid" id="historySecGrid">${gridHtml}</div>`,
   );
 }
@@ -646,8 +665,7 @@ function renderHistoryActions() {
 function renderCiclosPanel() {
   if (!historyLoadedCiclos.length) {
     return renderPanel(
-      "Historial de ciclos",
-      "Clic en una fila para ver las cerchas de ese ciclo",
+      "Ciclos",
       renderEmpty("Sin historial de ciclos disponible."),
       renderHistoryActions(),
     );
@@ -669,7 +687,6 @@ function renderCiclosPanel() {
 
   return renderPanel(
     "Ciclos",
-    "Selecciona un ciclo para ver cerchas, fotocelula y reloj",
     body,
     renderHistoryActions(),
   );
@@ -678,23 +695,6 @@ function renderCiclosPanel() {
 function renderHistorialView() {
   const ciclo = historyLoadedCiclos.find((c) => c.id === historySelectedCicloId) ?? null;
   view.innerHTML = renderCiclosPanel() + renderCicloDetail(ciclo, historySelectedSecciones);
-
-  document.getElementById("cyclesTableBody")?.addEventListener("click", (e) => {
-    const row = e.target.closest(".cycle-row");
-    if (!row) return;
-    selectHistoryCiclo(Number(row.dataset.cicloId));
-  });
-
-  document.getElementById("loadMoreBtn")?.addEventListener("click", () => loadHistorialCiclos(false));
-  document.getElementById("refreshHistoryBtn")?.addEventListener("click", () => loadHistorialCiclos(true));
-
-  document.getElementById("historySecGrid")?.addEventListener("click", (e) => {
-    const cell = e.target.closest("[data-sec-name]");
-    if (!cell) return;
-    document.querySelectorAll("#historySecGrid .section-cell.selected").forEach((c) => c.classList.remove("selected"));
-    cell.classList.add("selected");
-    setDetail("Cercha (hist.)", cell.dataset.secName, cell.dataset.secState, cell.dataset.secTs);
-  });
 }
 
 async function selectHistoryCiclo(cicloId) {
@@ -742,8 +742,7 @@ async function loadHistorialCiclos(reset = false) {
   const result = await fetchJson(`${endpoints.ciclos}?limit=100&offset=${offset}${hastaParam}`);
   if (!result.ok) {
     view.innerHTML = renderPanel(
-      "Historial de ciclos",
-      endpoints.ciclos,
+      "Ciclos",
       renderEmpty(`Error al cargar historial (${result.status ? `HTTP ${result.status}` : "sin conexión"}).`),
       endpointState(result),
     );
@@ -766,57 +765,35 @@ async function showHistorial() {
   }
 }
 
-async function showTecnico() {
-  const checks = await Promise.all(Object.entries(endpoints).map(async ([name, path]) => {
-    const result = await fetchJson(path);
-    return [name, path, result];
-  }));
-  const summaryResult = checks.find(([name]) => name === "resumen")?.[2] ?? { ok: false };
-  const summary = summaryResult.ok ? summaryResult.data : null;
-  const blockRows = summary
-    ? Object.entries(summary.bloques).map(([name, block]) => `
-        <tr>
-          <td>${escapeHtml(name)}</td>
-          <td>${blockBadge(summary, name)}</td>
-          <td>${escapeHtml(block.error || "-")}</td>
-        </tr>
-      `).join("")
-    : "";
+// --- WIRING ---------------------------------------------------------------
+const view = document.getElementById("view");
+const mainLayout = document.getElementById("mainLayout");
+const detailHeading = document.getElementById("detailHeading");
+const detailName = document.getElementById("detailName");
+const detailType = document.getElementById("detailType");
+const detailState = document.getElementById("detailState");
+const detailTs = document.getElementById("detailTs");
+const clearDetail = document.getElementById("clearDetail");
 
-  const endpointRows = checks.map(([name, path, result]) => `
-    <tr>
-      <td>${escapeHtml(name)}</td>
-      <td class="mono">${escapeHtml(path)}</td>
-      <td>${endpointState(result)}</td>
-    </tr>
-  `).join("");
-
-  view.innerHTML =
-    renderPanel("Diagnostico FINS", "Estado por bloque de lectura", summary ? `
-      <div class="table-wrap"><table>
-        <thead><tr><th>Bloque</th><th>Estado</th><th>Error</th></tr></thead>
-        <tbody>${blockRows}</tbody>
-      </table></div>
-    ` : renderEmpty("Sin resumen disponible.")) +
-    renderPanel("Contrato API", "Comprobacion pasiva de endpoints read-only", `
-      <div class="table-wrap"><table>
-        <thead><tr><th>Recurso</th><th>Endpoint</th><th>Estado</th></tr></thead>
-        <tbody>${endpointRows}</tbody>
-      </table></div>
-    `) +
-    renderPanel("Preparacion modo autenticado", "Zona reservada para fase futura", `
-      <div class="readonly-box locked">
-        <strong>Control no disponible</strong>
-        <span>La futura escritura requerira autenticacion, autorizacion, confirmacion y auditoria de servidor.</span>
-      </div>
-    `, badge("BLOQUEADO", "neutral"));
+async function ensureDiagnosticoChecks() {
+  if (diagnosticoChecks !== null) return;
+  if (diagnosticoChecksPromise !== null) {
+    await diagnosticoChecksPromise;
+    return;
+  }
+  diagnosticoChecksPromise = fetchEndpointChecks();
+  try {
+    diagnosticoChecks = await diagnosticoChecksPromise;
+    if (activeView === "estado") await showResumen();
+  } finally {
+    diagnosticoChecksPromise = null;
+  }
 }
 
 const views = {
-  resumen: showResumen,
+  estado: showResumen,
   secciones: showSecciones,
   historial: showHistorial,
-  tecnico: showTecnico,
 };
 
 const DETAIL_VIEWS = new Set(["secciones", "historial"]);
@@ -849,10 +826,6 @@ async function renderActive() {
   }
 
   view.setAttribute("aria-busy", "true");
-  if (refreshBtn) {
-    refreshBtn.disabled = true;
-    refreshBtn.dataset.refreshing = "true";
-  }
 
   try {
     await views[activeView]();
@@ -871,13 +844,8 @@ async function renderActive() {
     }
 
     view.setAttribute("aria-busy", "false");
-    if (refreshBtn) {
-      refreshBtn.disabled = false;
-      refreshBtn.dataset.refreshing = "false";
-    }
-    if (activeView !== "historial") {
-      refreshTimer = setTimeout(renderActive, activeView === "resumen" ? 3000 : 5000);
-    }
+    const interval = REFRESH_INTERVALS[activeView];
+    if (interval) refreshTimer = setTimeout(renderActive, interval);
   }
 }
 
@@ -887,9 +855,93 @@ document.querySelectorAll(".tab").forEach((button) => {
   });
 });
 
-refreshBtn?.addEventListener("click", () => {
-  clearTimeout(refreshTimer);
-  renderActive();
+clearDetail.addEventListener("click", () => {
+  setDetail("-", "-", "-", "-");
+  clearSelection();
 });
+
+view.addEventListener("click", async (event) => {
+  const jump = event.target.closest("[data-jump]");
+  if (jump) {
+    switchView(jump.dataset.jump);
+    return;
+  }
+
+  const openDiag = event.target.closest("[data-open-diagnostico]");
+  if (openDiag) {
+    diagnosticoOpen = true;
+    await showResumen();
+    const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    view.querySelector("[data-diagnostico]")?.scrollIntoView({
+      behavior: prefersReducedMotion ? "auto" : "smooth",
+    });
+    await ensureDiagnosticoChecks();
+    return;
+  }
+
+  const filter = event.target.closest("[data-section-filter]");
+  if (filter) {
+    sectionFilterState = filter.dataset.sectionFilter;
+    showSecciones();
+    return;
+  }
+
+  const secCell = event.target.closest(".section-cell[data-sec-name]");
+  if (secCell && activeView === "secciones") {
+    clearSelection();
+    secCell.classList.add("selected");
+    setDetail("Seccion", secCell.dataset.secName, secCell.dataset.secState, secCell.dataset.secTs);
+    return;
+  }
+
+  const cicloRow = event.target.closest(".cycle-row");
+  if (cicloRow) {
+    selectHistoryCiclo(Number(cicloRow.dataset.cicloId));
+    return;
+  }
+
+  const histSec = event.target.closest("#historySecGrid [data-sec-name]");
+  if (histSec) {
+    document.querySelectorAll("#historySecGrid .section-cell.selected")
+      .forEach((cell) => cell.classList.remove("selected"));
+    histSec.classList.add("selected");
+    setDetail("Cercha (hist.)", histSec.dataset.secName, histSec.dataset.secState, histSec.dataset.secTs);
+    return;
+  }
+
+  const loadMore = event.target.closest("#loadMoreBtn");
+  if (loadMore) {
+    loadHistorialCiclos(false);
+    return;
+  }
+
+  const refreshHist = event.target.closest("#refreshHistoryBtn");
+  if (refreshHist) {
+    loadHistorialCiclos(true);
+  }
+});
+
+view.addEventListener("input", (event) => {
+  if (event.target.id !== "sectionSearch") return;
+  const selectionStart = event.target.selectionStart ?? event.target.value.length;
+  const selectionEnd = event.target.selectionEnd ?? event.target.value.length;
+  sectionSearchTerm = event.target.value;
+  clearTimeout(sectionSearchTimer);
+  sectionSearchTimer = setTimeout(async () => {
+    await showSecciones();
+    const input = document.getElementById("sectionSearch");
+    input?.focus();
+    input?.setSelectionRange(
+      Math.min(selectionStart, sectionSearchTerm.length),
+      Math.min(selectionEnd, sectionSearchTerm.length),
+    );
+  }, 180);
+});
+
+view.addEventListener("toggle", async (event) => {
+  if (!event.target.matches("[data-diagnostico]")) return;
+  diagnosticoOpen = event.target.open;
+  if (diagnosticoOpen) await ensureDiagnosticoChecks();
+}, true);
 
 renderActive();
