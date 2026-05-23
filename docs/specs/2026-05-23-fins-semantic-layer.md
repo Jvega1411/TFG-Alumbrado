@@ -1,7 +1,7 @@
 # Spec: Capa semántica FINS — Pipeline Alumbrado TVITEC
 
 **Fecha:** 2026-05-23  
-**Revisión:** 2 (correcciones semánticas tras revisión)  
+**Revisión:** 3 (ajustes de contrato/implementación: helper words(), strict types, validadores semánticos, JSON columns para horario_tramo)  
 **Estrategia de migración:** Clean break — schema_version=2 obligatorio, sin compatibilidad v1  
 **Alcance:** acquisition (poller + decoders), subscriber (schema + listener), model, schemas API, tests
 
@@ -24,7 +24,7 @@ El pipeline actual usa nombres de campo heredados del HMI que no reflejan la sem
 | `subscriber/payload_schema.py` | REESCRIBIR — modelos Pydantic v2, 10 bloques exactos |
 | `subscriber/listener.py` | ACTUALIZAR — campos v2, nuevos bloques |
 | `model/fase2.py` | ACTUALIZAR — columnas renombradas/añadidas, tablas nuevas |
-| `migrations/` (Alembic) | NUEVA migración v2 |
+| `alembic/versions/` | NUEVA revisión v2 (`20260524_0003_v2_semantic_layer.py`) |
 | `schemas/lectura.py` | ACTUALIZAR — response models API |
 | `tests/test_poller.py` | ACTUALIZAR — tests v2 |
 | `tests/test_decoders.py` | CREAR — tests unitarios de decoders |
@@ -60,6 +60,16 @@ Cualquier mensaje con los 6 bloques v1 (`secciones`, `modo`, `fotocelula`, `relo
 Funciones puras sin dependencia de FINSClient. Cubren toda la decodificación que antes estaba inline en `poller.py`.
 
 ```python
+from fins.frame import parse_words_to_int_list
+
+def words(response: dict) -> list[int]:
+    """Helper único para extraer la lista de words de una respuesta FINS.
+    FINSClient.read_*_range() devuelve dict con clave 'data' (bytes); siempre
+    hay que pasar por parse_words_to_int_list. Esta función centraliza esa
+    conversión para que ningún snippet del poller use response['data'] ni
+    response[0] directamente."""
+    return parse_words_to_int_list(response["data"])
+
 def get_bit(word: int, bit: int) -> bool:
     """Extrae bit `bit` (0=LSB) de `word`."""
 
@@ -75,7 +85,10 @@ def decode_i32_low_high(low: int, high: int) -> int:
     el ladder usa <=SL sobre D102, confirmando signed long)."""
 
 def bcd_byte_to_int(byte: int) -> int:
-    """Decodifica un byte BCD empaquetado: ((byte>>4)*10) + (byte & 0x0F)."""
+    """Decodifica un byte BCD empaquetado: ((byte>>4)*10) + (byte & 0x0F).
+    Rechaza nibbles > 9 con ValueError. Si AR351..AR353 trae un valor no-BCD
+    (PLC en estado inconsistente), el bloque reloj_ar debe marcarse como
+    failed; no se publica una hora falsa."""
 
 def decode_modo_label(modfunalu: int) -> str:
     """D116 modfunalu → etiqueta semántica del ladder.
@@ -108,14 +121,18 @@ def decode_schedule_tramos(raw_words: list[int]) -> list[dict]:
 
 def decode_cercha_salidas(raw_words: list[int]) -> list[dict]:
     """W4..W13 (10 words) → 160 entradas cercha_salidas.
-    Mapeo de bits (corregido respecto a borrador inicial):
+    Mapeo de bits:
        bits   0..111 = W4.00..W10.15 (7 words W4..W10) → cerchas 1..112
        bits 112..127 = W11.00..W11.15                  → cerchas 113..128
        bits 128..143 = W12.00..W12.15                  → cerchas 129..144
        bits 144..159 = W13.00..W13.15                  → cerchas 145..160
     Cada entrada: {id, activa, source ('W<word>.<bit>'), physical_io_confirmed: False}.
-    saldigcer1..126 confirmados por Tabla_ES.html; 127..160 marcados igual pero
-    sin confirmación CIO/bornera (sigue como pending_cio_map a nivel físico)."""
+
+    Nomenclatura del símbolo PLC: Tabla_ES.html confirma saldigcer1..126 con
+    direcciones W4.00..W11.13. Las cerchas 127..160 NO se nombran como
+    saldigcer127..160 en esta spec (esos símbolos no están confirmados en la
+    tabla local). Se exponen como cercha_salidas[127..160] con WR source
+    conocido y mapeo de símbolo/bornera pendiente (pending_cio_map)."""
 ```
 
 ---
@@ -137,7 +154,7 @@ Se añade `salida_wr: bool | None` por sección como espejo de `cercha_salidas[i
 ### 3.2 `_read_modo(client)` — DM D116
 
 ```python
-modfunalu = words[0]
+modfunalu = words(client.read_dm_range(116, 1))[0]
 return {
     'modfunalu': modfunalu,
     'modo_label': decode_modo_label(modfunalu),  # 'horarios'|'fotocelula'|'ambos'|'desconocido'
@@ -149,9 +166,9 @@ return {
 Tres lecturas FINS, un bloque lógico:
 
 ```python
-w25  = client.read_w_range(25, 1)
-h100 = client.read_h_range(100, 1)
-dm   = client.read_dm_range(108, 8)   # D108..D115 → 4 pares DINT
+w25  = words(client.read_w_range(25, 1))[0]
+h100 = words(client.read_h_range(100, 1))[0]
+dm   = words(client.read_dm_range(108, 8))   # D108..D115 → 4 pares DINT
 return {
     'entrada_raw': get_bit(w25, 0),
     'entrada_raw_source': 'W25.00',
@@ -169,7 +186,7 @@ return {
 ### 3.4 `_read_reloj(client)` — DM D500..D506
 
 ```python
-raw = parse_words_to_int_list(client.read_dm_range(500, 7)['data'])
+raw = words(client.read_dm_range(500, 7))
 return decode_clock_dm(raw, encoding='binary')  # encoding configurable, no certeza absoluta
 # Devuelve: {'raw_words': [...], 'encoding': 'binary', 'decoded': {seg, min, hora, dia, mes, anio, dia_semana}}
 ```
@@ -179,8 +196,8 @@ return decode_clock_dm(raw, encoding='binary')  # encoding configurable, no cert
 ### 3.5 `_read_horarios(client)` — DM D1000..D1007 + D3632..D3651
 
 ```python
-raw_1_2  = parse_words_to_int_list(client.read_dm_range(1000, 8)['data'])
-raw_3_12 = parse_words_to_int_list(client.read_dm_range(3632, 20)['data'])
+raw_1_2  = words(client.read_dm_range(1000, 8))
+raw_3_12 = words(client.read_dm_range(3632, 20))
 raw_words = raw_1_2 + raw_3_12
 return {
     'raw_words': raw_words,
@@ -193,6 +210,8 @@ return {
 Sin cambios funcionales:
 
 ```python
+a401 = words(client.read_ar_range(401, 1))[0]
+a402 = words(client.read_ar_range(402, 1))[0]
 return {
     'cycle_time_error': bool((a401 >> 8) & 1),
     'low_battery':      bool((a402 >> 4) & 1),
@@ -205,13 +224,15 @@ return {
 ### 3.7 `_read_reset_temporizado(client)` — WR W1 + DM D102..D107
 
 ```python
-w1 = client.read_w_range(1, 1)[0]
-dm = client.read_dm_range(102, 6)     # D102..D107 (D106 conapaalu, D107 reservado)
+w1_raw = words(client.read_w_range(1, 1))[0]
+dm = words(client.read_dm_range(102, 6))   # D102..D107 (D106 conapaalu; D107 sin mapeo confirmado)
 return {
-    'horario_global_activo':        get_bit(w1, 1),
+    'w1_raw': w1_raw,
+    'dm_raw_words': dm,                                   # 6 ints D102..D107 para auditoría
+    'horario_global_activo':        get_bit(w1_raw, 1),
     'horario_global_activo_source': 'W1.01',
     'reset': {
-        'activo':                        get_bit(w1, 2),
+        'activo':                        get_bit(w1_raw, 2),
         'activo_source':                 'W1.02',
         'retardo_segundo_apagado_s':     decode_i32_low_high(dm[0], dm[1]),  # D102/D103
         'temporizador_segundo_apagado_s': decode_i32_low_high(dm[2], dm[3]), # D104/D105
@@ -221,15 +242,15 @@ return {
 }
 ```
 
-`D107` queda en `raw_words` del bloque para auditoría pero sin campo semántico (reservado en Tabla_ES.html).
+`D107` carece de mapeo confirmado en `Tabla_ES.html` (no se afirma "reservado"). Queda accesible vía `dm_raw_words[5]` para auditoría, sin campo semántico expuesto. Si en el futuro se confirma su función, se le añade campo nominado sin romper el contrato.
 
 ### 3.8 `_read_hmi_original(client)` — HR H10 + DM D1008..D1009
 
 ```python
-h10 = client.read_h_range(10, 1)[0]
-dm  = client.read_dm_range(1008, 2)
+h10 = words(client.read_h_range(10, 1))[0]
+dm  = words(client.read_dm_range(1008, 2))
 return {
-    'indice_seccion':                          dm[0],   # D1008
+    'indice_seccion':                          dm[0],   # D1008 (índice PLC raw, ver §6 Indexación)
     'indice_anterior':                         dm[1],   # D1009
     'automatico_seccion_seleccionada':         get_bit(h10, 12),  # H10.12 funautsec
     'manual_seccion_seleccionada':             get_bit(h10, 13),  # H10.13 marmansec
@@ -244,22 +265,24 @@ return {
 ### 3.9 `_read_reloj_ar(client)` — AR351..AR353
 
 ```python
-ar = client.read_ar_range(351, 3)
+ar = words(client.read_ar_range(351, 3))
 return decode_ar_clock(ar[0], ar[1], ar[2])
 # Devuelve: {
 #   'raw':     {'A351_minsegplc': ..., 'A352_diahorplc': ..., 'A353_anomesplc': ...},
 #   'decoded': {'minuto', 'segundo', 'dia', 'hora', 'anio', 'mes'},
 #   'encoding': 'bcd_packed_channel',
 # }
+# Si bcd_byte_to_int lanza ValueError (nibble > 9), el bloque queda 'failed'
+# y reloj_ar=None en el payload (no se publica una hora falsa).
 ```
 
 ### 3.10 `_read_salidas_wr(client)` — WR W4..W13
 
 ```python
-raw_words = parse_words_to_int_list(client.read_w_range(4, 10)['data'])
+raw = words(client.read_w_range(4, 10))                # 10 ints W4..W13
 return {
-    'raw_words': raw_words,                                # 10 ints, para auditoría
-    'cercha_salidas': decode_cercha_salidas(raw_words),    # 160 entradas estructuradas
+    'raw_words': raw,                                  # para auditoría
+    'cercha_salidas': decode_cercha_salidas(raw),      # 160 entradas estructuradas
     'physical_io_mapping_status': 'pending_cio_map',
 }
 ```
@@ -305,6 +328,8 @@ return {
     } | None,
 
     'reset_temporizado': {
+        'w1_raw': int,
+        'dm_raw_words': list[int],                 # exactamente 6 ints (D102..D107)
         'horario_global_activo': bool,
         'horario_global_activo_source': 'W1.01',
         'reset': {
@@ -360,112 +385,139 @@ return {
 
 ## 4. Pydantic v2 — `subscriber/payload_schema.py`
 
-Todas las listas usan `Field(default_factory=list)`; ningún default mutable.
+Reglas globales del schema v2:
+- **Tipos estrictos**: `StrictBool`, `StrictInt` en todos los campos (no se aceptan coerciones de string → int). `ts: datetime` (no `str`).
+- **`extra='forbid'`** en todos los modelos (rechaza campos desconocidos).
+- **`Field(default_factory=list)`** en todas las listas; ningún default mutable.
+- **Longitudes fijas validadas**: `secciones=112`, `cercha_salidas=160`, `salidas_wr.raw_words=10`, `horarios.raw_words=28`, `horarios.tramos=12`, `plc_reloj.raw_words=7`, `reset_temporizado.dm_raw_words=6`.
+- **Constantes endurecidas con `Literal`**: `max_reintentos=Literal[3]`, `physical_io_confirmed=Literal[False]` (impide marcar una salida como confirmada mientras siga `pending_cio_map`).
+- **Status sin `'absent'`**: en v2 todos los bloques siempre se intentan → `Literal['ok', 'failed']` solamente.
+- **`fins_ok` coherente**: `fins_ok = all(block.status == 'ok' for block in read_status.values())`.
+- **Coherencia bloque ↔ payload**: si `status='ok'`, la sección correspondiente del payload no puede ser `None` y debe cumplir su longitud. Si `status='failed'`, esa sección debe ser `None` (o vacía controlada para `secciones`).
 
 ```python
-from pydantic import BaseModel, ConfigDict, Field, model_validator
-from typing import Literal
+from datetime import datetime
+from typing import Annotated, Literal
+
+from pydantic import (
+    BaseModel, ConfigDict, Field, StrictBool, StrictInt,
+    model_validator,
+)
 
 READ_BLOCKS_V2 = (
     'secciones', 'modo', 'fotocelula', 'reloj', 'horarios', 'diagnostico',
     'reset_temporizado', 'hmi_original', 'reloj_ar', 'salidas_wr',
 )
 
+# --- helpers de longitud ---
+FixedLen10 = Annotated[list[StrictInt], Field(min_length=10, max_length=10)]
+FixedLen6  = Annotated[list[StrictInt], Field(min_length=6,  max_length=6)]
+FixedLen7  = Annotated[list[StrictInt], Field(min_length=7,  max_length=7)]
+FixedLen28 = Annotated[list[StrictInt], Field(min_length=28, max_length=28)]
+
+# --- bloques ---
+class ReadBlockStatus(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    status: Literal['ok', 'failed']        # 'absent' eliminado en v2
+    error: str | None = None
+
 class SeccionPayload(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    id: int
-    automatico_calculado: bool
-    manual_activo: bool
-    salida_interna: bool
-    salida_wr: bool | None = None
+    id: StrictInt                          # 1..112 (ver §6 Indexación)
+    automatico_calculado: StrictBool
+    manual_activo: StrictBool
+    salida_interna: StrictBool
+    salida_wr: StrictBool | None = None    # None si bloque salidas_wr falló
 
 class TramoPayload(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    tramo: int
-    inicio_hora: int | None
-    inicio_minuto: int | None
-    fin_hora: int
-    fin_minuto: int
-    inicio_raw: list[int] | None = None
-    fin_raw: list[int] = Field(default_factory=list)
+    tramo: StrictInt                       # 1..12
+    inicio_hora: StrictInt | None
+    inicio_minuto: StrictInt | None
+    fin_hora: StrictInt
+    fin_minuto: StrictInt
+    inicio_raw: list[StrictInt] | None = None
+    fin_raw: list[StrictInt] = Field(default_factory=list)
     source: dict[str, str] = Field(default_factory=dict)
 
 class HorariosPayload(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    raw_words: list[int] = Field(default_factory=list)
-    tramos: list[TramoPayload] = Field(default_factory=list)
+    raw_words: FixedLen28
+    tramos: Annotated[list[TramoPayload], Field(min_length=12, max_length=12)]
 
 class ModoPayload(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    modfunalu: int
+    modfunalu: StrictInt
     modo_label: Literal['horarios', 'fotocelula', 'ambos', 'desconocido']
 
 class FotocelulaPayload(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    entrada_raw: bool
+    entrada_raw: StrictBool
     entrada_raw_source: Literal['W25.00']
-    mem_fun: bool
+    mem_fun: StrictBool
     mem_fun_source: Literal['H100.00']
-    filtrada_activa: bool
+    filtrada_activa: StrictBool
     filtrada_source: Literal['H100.01']
-    temporizador_activacion_s: int
-    temporizador_desactivacion_s: int
-    retardo_activacion_s: int
-    retardo_desactivacion_s: int
+    temporizador_activacion_s: StrictInt
+    temporizador_desactivacion_s: StrictInt
+    retardo_activacion_s: StrictInt
+    retardo_desactivacion_s: StrictInt
 
 class RelojDecoded(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    segundo: int; minuto: int; hora: int
-    dia: int; mes: int; anio: int; dia_semana: int
+    segundo: StrictInt; minuto: StrictInt; hora: StrictInt
+    dia: StrictInt; mes: StrictInt; anio: StrictInt; dia_semana: StrictInt
 
 class RelojPayload(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    raw_words: list[int] = Field(default_factory=list)
-    encoding: Literal['binary', 'bcd'] = 'binary'
+    raw_words: FixedLen7
+    encoding: Literal['binary', 'bcd']
     decoded: RelojDecoded
 
 class DiagnosticoPayload(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    cycle_time_error: bool
-    low_battery: bool
-    io_verify_error: bool
+    cycle_time_error: StrictBool
+    low_battery: StrictBool
+    io_verify_error: StrictBool
 
 class ResetSubPayload(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    activo: bool
+    activo: StrictBool
     activo_source: Literal['W1.02']
-    retardo_segundo_apagado_s: int
-    temporizador_segundo_apagado_s: int
-    contador_apagados: int
-    max_reintentos: int = 3
+    retardo_segundo_apagado_s: StrictInt
+    temporizador_segundo_apagado_s: StrictInt
+    contador_apagados: StrictInt
+    max_reintentos: Literal[3] = 3         # constante endurecida
 
 class ResetTemporizadoPayload(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    horario_global_activo: bool
+    w1_raw: StrictInt
+    dm_raw_words: FixedLen6                # D102..D107
+    horario_global_activo: StrictBool
     horario_global_activo_source: Literal['W1.01']
     reset: ResetSubPayload
 
 class HmiOriginalPayload(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    indice_seccion: int
-    indice_anterior: int
-    automatico_seccion_seleccionada: bool
-    manual_seccion_seleccionada: bool
-    orden_transferencia_comun: bool
-    indicacion_activacion_alumbrado_seccion: bool
-    h10_raw: int
+    indice_seccion: StrictInt              # índice PLC raw D1008 (ver §6)
+    indice_anterior: StrictInt
+    automatico_seccion_seleccionada: StrictBool
+    manual_seccion_seleccionada: StrictBool
+    orden_transferencia_comun: StrictBool
+    indicacion_activacion_alumbrado_seccion: StrictBool
+    h10_raw: StrictInt
 
 class RelojArRaw(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    A351_minsegplc: int
-    A352_diahorplc: int
-    A353_anomesplc: int
+    A351_minsegplc: StrictInt
+    A352_diahorplc: StrictInt
+    A353_anomesplc: StrictInt
 
 class RelojArDecoded(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    minuto: int; segundo: int
-    dia: int; hora: int
-    anio: int; mes: int
+    minuto: StrictInt; segundo: StrictInt
+    dia: StrictInt; hora: StrictInt
+    anio: StrictInt; mes: StrictInt
 
 class RelojArPayload(BaseModel):
     model_config = ConfigDict(extra='forbid')
@@ -475,27 +527,22 @@ class RelojArPayload(BaseModel):
 
 class CerchaSalidaPayload(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    id: int
-    activa: bool
-    source: str              # 'W<word>.<bit>'
-    physical_io_confirmed: bool = False
+    id: StrictInt                                  # 1..160
+    activa: StrictBool
+    source: str                                    # 'W<word>.<bit>'
+    physical_io_confirmed: Literal[False] = False  # endurecido: pending_cio_map
 
 class SalidasWrPayload(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    raw_words: list[int] = Field(default_factory=list)
-    cercha_salidas: list[CerchaSalidaPayload] = Field(default_factory=list)
+    raw_words: FixedLen10
+    cercha_salidas: Annotated[list[CerchaSalidaPayload], Field(min_length=160, max_length=160)]
     physical_io_mapping_status: Literal['pending_cio_map']
-
-class ReadBlockStatus(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-    status: Literal['ok', 'failed', 'absent']
-    error: str | None = None
 
 class LecturaPayload(BaseModel):
     model_config = ConfigDict(extra='forbid')
     schema_version: Literal[2]
-    ts: str
-    fins_ok: bool
+    ts: datetime
+    fins_ok: StrictBool
     fins_error: str | None = None
     read_status: dict[str, ReadBlockStatus]
 
@@ -510,14 +557,69 @@ class LecturaPayload(BaseModel):
     secciones: list[SeccionPayload] = Field(default_factory=list)
     salidas_wr: SalidasWrPayload | None = None
 
+    # --- validadores semánticos ---
+
     @model_validator(mode='after')
-    def check_read_status_blocks(self) -> 'LecturaPayload':
+    def _check_read_status_keys(self) -> 'LecturaPayload':
         expected = set(READ_BLOCKS_V2)
         actual = set(self.read_status.keys())
         if actual != expected:
             raise ValueError(
                 f"read_status v2 requiere exactamente {sorted(expected)}, recibido {sorted(actual)}"
             )
+        return self
+
+    @model_validator(mode='after')
+    def _check_fins_ok_consistency(self) -> 'LecturaPayload':
+        all_ok = all(s.status == 'ok' for s in self.read_status.values())
+        if self.fins_ok != all_ok:
+            raise ValueError("fins_ok debe ser True si y solo si los 10 bloques tienen status='ok'")
+        if self.fins_ok and self.fins_error is not None:
+            raise ValueError("fins_ok=True requiere fins_error=None")
+        return self
+
+    @model_validator(mode='after')
+    def _check_block_payload_coherence(self) -> 'LecturaPayload':
+        def is_ok(block: str) -> bool:
+            return self.read_status[block].status == 'ok'
+
+        # secciones: si ok → exactamente 112 ids únicos 1..112
+        if is_ok('secciones'):
+            if len(self.secciones) != 112:
+                raise ValueError(f"secciones ok requiere 112 entradas, hay {len(self.secciones)}")
+            ids = sorted(s.id for s in self.secciones)
+            if ids != list(range(1, 113)):
+                raise ValueError("secciones ok requiere ids exactamente 1..112")
+        else:
+            if self.secciones:
+                raise ValueError("secciones failed no acepta entradas")
+
+        # caso especial: secciones ok + salidas_wr failed → salida_wr debe ser None en cada sección
+        if is_ok('secciones') and not is_ok('salidas_wr'):
+            if any(s.salida_wr is not None for s in self.secciones):
+                raise ValueError("salidas_wr failed: cada seccion.salida_wr debe ser None")
+
+        # bloques 1:1 con payload section
+        pairs = (
+            ('modo', self.modo), ('fotocelula', self.fotocelula),
+            ('reloj', self.plc_reloj), ('horarios', self.horarios),
+            ('diagnostico', self.diagnostico),
+            ('reset_temporizado', self.reset_temporizado),
+            ('hmi_original', self.hmi_original), ('reloj_ar', self.reloj_ar),
+            ('salidas_wr', self.salidas_wr),
+        )
+        for block, payload in pairs:
+            if is_ok(block) and payload is None:
+                raise ValueError(f"bloque {block} ok requiere payload presente")
+            if not is_ok(block) and payload is not None:
+                raise ValueError(f"bloque {block} failed no acepta payload (debe ser None)")
+
+        # salidas_wr ok: cercha_salidas ids exactamente 1..160
+        if is_ok('salidas_wr'):
+            cids = sorted(c.id for c in self.salidas_wr.cercha_salidas)
+            if cids != list(range(1, 161)):
+                raise ValueError("salidas_wr ok requiere cercha_salidas ids 1..160")
+
         return self
 ```
 
@@ -536,18 +638,27 @@ Renombrar columnas + añadir `salida_wr`:
 | `horario_activo` | `salida_interna` | RENAME (batch_alter_table) |
 | — | `salida_wr` | ADD COLUMN BOOLEAN NULL |
 
-### 5.2 `horario_tramo` — ampliación no destructiva
+### 5.2 `horario_tramo` — ampliación no destructiva, sin backfill
 
-Mantener `inicio_raw`, `fin_raw` intactos. Añadir 4 columnas decodificadas **todas nullable** + backfill desde raw durante la migración:
+**Estado actual:** `inicio_raw` y `fin_raw` son **`INTEGER`** (un solo int por fila), no JSON arrays. Además, el mapeo v1 era provisional/incorrecto (`listener.py` lo marca como `PENDIENTE P1`). Los valores históricos en esas columnas no son una representación fiable del raw real de la palabra DM.
 
-| Columna nueva | Tipo | Nullable | Descripción |
+**Decisión:** preservar las columnas legacy intactas (no se tocan, no se migran), y añadir **columnas v2 nuevas** que conviven con las legacy:
+
+| Columna | Tipo | Nullable | Origen v2 |
 |---|---|---|---|
-| `inicio_hora` | INTEGER | SÍ | None para tramos 3-12 |
-| `inicio_minuto` | INTEGER | SÍ | None para tramos 3-12 |
-| `fin_hora` | INTEGER | SÍ | Backfill desde fin_raw en migración |
-| `fin_minuto` | INTEGER | SÍ | Backfill desde fin_raw en migración |
+| `inicio_raw` | INTEGER (legacy) | SÍ | INTACTA — datos v1; NULL para filas v2 |
+| `fin_raw` | INTEGER (legacy) | SÍ | INTACTA — datos v1; NULL para filas v2 |
+| `inicio_raw_words` | TEXT (JSON) | SÍ | NUEVA — lista de ints (o NULL para tramos 3-12) |
+| `fin_raw_words` | TEXT (JSON) | SÍ | NUEVA — lista de ints (siempre presente en v2) |
+| `source_json` | TEXT (JSON) | SÍ | NUEVA — dict `{'fin_hora':'D3632', ...}` |
+| `inicio_hora` | INTEGER | SÍ | NUEVA — None para tramos 3-12 |
+| `inicio_minuto` | INTEGER | SÍ | NUEVA — None para tramos 3-12 |
+| `fin_hora` | INTEGER | SÍ | NUEVA — siempre presente en v2 |
+| `fin_minuto` | INTEGER | SÍ | NUEVA — siempre presente en v2 |
 
-No usar `server_default='0'`: falsearía históricos donde el raw original no era cero. Las nullable + backfill mantienen la verdad de los datos antiguos.
+**Nada de backfill** desde `inicio_raw`/`fin_raw` legacy hacia las columnas decodificadas v2: el dato origen no es fiable. Las filas v1 históricas mantienen sus dos enteros provisionales en las columnas legacy; las columnas v2 quedan NULL para esas filas. Filas v2 nuevas llevan las columnas v2 pobladas y las legacy NULL.
+
+No se usa `server_default='0'` en ninguna columna nueva: falsearía la lectura histórica y desactivaría la convención "NULL = no aplicable / no v2".
 
 ### 5.3 Tablas nuevas (1:1 con `ciclo`)
 
@@ -583,7 +694,9 @@ No usar `server_default='0'`: falsearía históricos donde el raw original no er
 
 Se elige JSON column para `cercha_salidas` en vez de tabla detalle por cercha. 160 filas por ciclo × N ciclos/día explotaría storage sin valor analítico equivalente; el JSON mantiene los 160 estados consultables por ciclo y permite añadir tabla detalle más adelante si surge necesidad de queries por cercha individual.
 
-### 5.4 Migración Alembic (batch mode obligatorio para SQLite)
+### 5.4 Migración Alembic (`alembic/versions/20260524_0003_v2_semantic_layer.py`)
+
+Batch mode obligatorio para SQLite (no soporta ALTER COLUMN directo). **Sin backfill** de columnas v2 (ver §5.2).
 
 ```python
 def upgrade():
@@ -594,37 +707,69 @@ def upgrade():
         batch.add_column(sa.Column('salida_wr', sa.Boolean(), nullable=True))
 
     with op.batch_alter_table('horario_tramo') as batch:
-        batch.add_column(sa.Column('inicio_hora',   sa.Integer(), nullable=True))
-        batch.add_column(sa.Column('inicio_minuto', sa.Integer(), nullable=True))
-        batch.add_column(sa.Column('fin_hora',      sa.Integer(), nullable=True))
-        batch.add_column(sa.Column('fin_minuto',    sa.Integer(), nullable=True))
+        # NO se tocan inicio_raw / fin_raw (INTEGER legacy v1).
+        # Nuevas columnas v2, todas nullable, sin server_default:
+        batch.add_column(sa.Column('inicio_raw_words', sa.Text(),    nullable=True))  # JSON
+        batch.add_column(sa.Column('fin_raw_words',    sa.Text(),    nullable=True))  # JSON
+        batch.add_column(sa.Column('source_json',      sa.Text(),    nullable=True))  # JSON
+        batch.add_column(sa.Column('inicio_hora',      sa.Integer(), nullable=True))
+        batch.add_column(sa.Column('inicio_minuto',    sa.Integer(), nullable=True))
+        batch.add_column(sa.Column('fin_hora',         sa.Integer(), nullable=True))
+        batch.add_column(sa.Column('fin_minuto',       sa.Integer(), nullable=True))
 
-    # Backfill horario_tramo desde inicio_raw/fin_raw (no usa server_default).
-    op.execute("""
-        UPDATE horario_tramo
-        SET fin_hora    = json_extract(fin_raw, '$[0]'),
-            fin_minuto  = json_extract(fin_raw, '$[1]')
-        WHERE fin_raw IS NOT NULL
-    """)
-    op.execute("""
-        UPDATE horario_tramo
-        SET inicio_hora   = json_extract(inicio_raw, '$[0]'),
-            inicio_minuto = json_extract(inicio_raw, '$[1]')
-        WHERE inicio_raw IS NOT NULL
-    """)
-
+    # Tablas nuevas (1:1 con ciclo)
     op.create_table('fotocelula_state',        ...)
     op.create_table('reset_temporizado_state', ...)
     op.create_table('hmi_original_state',      ...)
     op.create_table('reloj_ar_state',          ...)
     op.create_table('salidas_wr_state',        ...)
+
+
+def downgrade():
+    op.drop_table('salidas_wr_state')
+    op.drop_table('reloj_ar_state')
+    op.drop_table('hmi_original_state')
+    op.drop_table('reset_temporizado_state')
+    op.drop_table('fotocelula_state')
+
+    with op.batch_alter_table('horario_tramo') as batch:
+        for col in ('fin_minuto', 'fin_hora', 'inicio_minuto', 'inicio_hora',
+                    'source_json', 'fin_raw_words', 'inicio_raw_words'):
+            batch.drop_column(col)
+
+    with op.batch_alter_table('seccion_estado') as batch:
+        batch.drop_column('salida_wr')
+        batch.alter_column('salida_interna',       new_column_name='horario_activo')
+        batch.alter_column('manual_activo',        new_column_name='manual')
+        batch.alter_column('automatico_calculado', new_column_name='automatico')
 ```
 
-*(El formato exacto de `inicio_raw`/`fin_raw` en SQLite debe verificarse antes de escribir el backfill — si están como BLOB/pickle en lugar de JSON, el `UPDATE` se hace en Python iterando por filas en vez de `json_extract`.)*
+La migración es puramente estructural. La validación funcional ocurre en el primer ciclo v2 que escriba el subscriber, donde Pydantic rechazaría cualquier inconsistencia antes de tocar la base de datos.
 
 ---
 
-## 6. Mapeo CIO físico — PENDIENTE explícito
+## 6. Indexación (regla v2 explícita)
+
+Para evitar ambigüedad entre índices PLC raw e identificadores del payload:
+
+```text
+secciones[i].id           es 1-based: 1..112
+cercha_salidas[j].id      es 1-based: 1..160
+tramos[t].tramo           es 1-based: 1..12
+hmi_original.indice_seccion  CONSERVA el valor raw PLC (D1008), tal cual.
+hmi_original.indice_anterior CONSERVA el valor raw PLC (D1009), tal cual.
+
+Equivalencia para resolver la sección seleccionada por la HMI:
+    seccion.id == hmi_original.indice_seccion + 1
+    (D1008 es 0-based porque el ladder lo usa como subíndice de bit en
+     H11.00[D1008], H18.00[D1008].)
+```
+
+Esta regla queda como contrato implícito del schema v2. No se añade un campo `plc_index` a `SeccionPayload` (se considera bloat: el cálculo es trivial y la regla está documentada aquí). Si en el futuro aparece necesidad de exponer `plc_index` explícito a consumidores externos, es un campo añadido sin romper compatibilidad.
+
+---
+
+## 7. Mapeo CIO físico — PENDIENTE explícito
 
 `saldigcer1..126` están confirmados por `Tabla_ES.html` (`array_de_salida BOOL[160] W4.00`, `salidas_digitales WORD[10] W4`). `saldigcer127..160` aplican el mismo mapeo bit→cercha pero sin confirmación de la bornera CIO física.
 
@@ -642,61 +787,91 @@ En esta iteración:
 
 ---
 
-## 7. Listener `subscriber/listener.py` — cambios
+## 8. Listener `subscriber/listener.py` — cambios
 
 - Sustituir referencias `s.automatico`, `s.manual`, `s.horario_activo` por los nombres v2 (`automatico_calculado`, `manual_activo`, `salida_interna`)
 - Escribir `salida_wr` en `seccion_estado` desde `secciones[i].salida_wr`
-- Para `horario_tramo`: usar `inicio_hora/minuto` y `fin_hora/minuto` del payload `tramos[]`, mantener `inicio_raw`/`fin_raw` como serialización de `inicio_raw`/`fin_raw` del payload. Eliminar el comentario PENDIENTE P1.
-- Añadir inserts a las 5 tablas nuevas: `fotocelula_state`, `reset_temporizado_state`, `hmi_original_state`, `reloj_ar_state`, `salidas_wr_state` (con `cercha_salidas` serializado a JSON).
+- Para `horario_tramo` (filas v2 nuevas):
+  - **NO escribir** las columnas legacy `inicio_raw` / `fin_raw` (quedan NULL en filas v2)
+  - Escribir las columnas v2: `inicio_raw_words` y `fin_raw_words` como JSON (`json.dumps([...])`), `source_json` igual, y los 4 enteros `inicio_hora`/`inicio_minuto`/`fin_hora`/`fin_minuto` (con NULL en `inicio_*` para tramos 3-12)
+  - Eliminar el comentario PENDIENTE P1
+- Añadir inserts a las 5 tablas nuevas: `fotocelula_state`, `reset_temporizado_state`, `hmi_original_state`, `reloj_ar_state`, `salidas_wr_state` (con `cercha_salidas` y `raw_words` serializados a JSON)
 
 ---
 
-## 8. API `schemas/lectura.py`
+## 9. API `schemas/lectura.py`
 
 Actualizar response models para reflejar campos v2. Los renombrados de `seccion_estado` se propagan automáticamente si Pydantic usa `from_attributes=True` contra el modelo SQLAlchemy actualizado. Para las nuevas tablas, definir response models nuevos que la API pueda exponer en endpoints por ciclo (`/ciclos/{id}/fotocelula`, `/ciclos/{id}/salidas_wr`, etc., scope a definir en el plan de implementación).
 
 ---
 
-## 9. Tests
+## 10. Tests
 
-### 9.1 `tests/test_decoders.py` (NUEVO)
+### 10.1 `tests/test_decoders.py` (NUEVO)
 
+- `words()`: extrae `parse_words_to_int_list(response['data'])` correctamente; rechaza dict sin `data`
 - `get_bit`: extremos (bit 0, bit 15) y bits intermedios
 - `extract_section_bits`: idénticos a los 8 casos actuales de `test_poller.py`
 - `decode_u32_low_high`: básico + valores grandes (high=0xFFFF)
 - `decode_i32_low_high`: positivos, negativo (high con MSB), borde ±2^31
-- `bcd_byte_to_int`: 0x00, 0x09, 0x10, 0x99, valores no-BCD (documentar comportamiento)
+- `bcd_byte_to_int`: 0x00→0, 0x09→9, 0x10→10, 0x99→99; **0x0A, 0xAB, 0xFF → ValueError** (cobertura explícita del rechazo de nibbles > 9)
 - `decode_modo_label`: 0→horarios, 1→fotocelula, 2→ambos, 99→desconocido
-- `decode_ar_clock`: caso conocido manual + validación de keys
+- `decode_ar_clock`: caso conocido manual + validación de keys; caso con AR351=0x9999 (no-BCD) → ValueError
 - `decode_clock_dm`: encoding='binary' y encoding='bcd' (estructura, no validez de valores)
-- `decode_schedule_tramos`: tramo 1 con inicio+fin, tramo 5 solo fin, source dict correcto
-- `decode_cercha_salidas`: bit 0 → cercha 1 source 'W4.00'; bit 111 → cercha 112 source 'W10.15'; bit 112 → cercha 113 source 'W11.00'; bit 159 → cercha 160 source 'W13.15'
+- `decode_schedule_tramos`: tramo 1 con inicio+fin (source incluye D1000/D1001 y D1002/D1003), tramo 5 solo fin (inicio_* = None, source solo fin_*), longitud total = 12 tramos
+- `decode_cercha_salidas`: bit 0 → cercha 1 source 'W4.00'; bit 111 → cercha 112 source 'W10.15'; bit 112 → cercha 113 source 'W11.00'; bit 159 → cercha 160 source 'W13.15'; longitud total = 160; `physical_io_confirmed=False` para los 160
 
-### 9.2 `tests/test_poller.py` (ACTUALIZAR)
+### 10.2 `tests/test_poller.py` (ACTUALIZAR)
 
 - Actualizar fixtures FINS para incluir las nuevas lecturas (W1, H10, AR351..AR353, D102..D115, D1008..D1009, W4..W13)
 - Cubrir los 10 bloques v2 individualmente (status 'ok' por bloque)
 - Cubrir fallos parciales: un bloque falla, los demás se conservan
 - `build_payload`: validar contra `LecturaPayload` (parseo Pydantic) en cada test
-- Test específico de que `salida_wr` en cada sección refleja `cercha_salidas[id-1].activa`
+- Test específico de que `salida_wr` en cada sección refleja `cercha_salidas[id-1].activa` cuando `salidas_wr` ok
+- Test específico: si `salidas_wr` falla y `secciones` ok → cada `seccion.salida_wr is None`
 - Test específico de que `read_status` contiene exactamente los 10 nombres v2
+
+### 10.3 `tests/test_payload_schema.py` (ACTUALIZAR)
+
+Coverage de los validadores semánticos nuevos:
+- Mensaje con `schema_version=1` → ValidationError (no acepta v1)
+- `read_status` con 9 bloques o con un nombre v1 ajeno → ValidationError
+- `fins_ok=True` pero un bloque con `status='failed'` → ValidationError
+- `fins_ok=True` con `fins_error` no-None → ValidationError
+- `secciones` con 111 entradas y bloque ok → ValidationError
+- `secciones` ids no contiguos 1..112 → ValidationError
+- `salidas_wr` failed con `secciones[0].salida_wr=True` → ValidationError
+- `cercha_salidas` con 159 entradas → ValidationError
+- `cercha_salidas[i].physical_io_confirmed=True` → ValidationError (Literal[False])
+- `reset_temporizado.reset.max_reintentos=5` → ValidationError (Literal[3])
+- Bloque `fotocelula` ok con `fotocelula=None` → ValidationError
+- Bloque `fotocelula` failed con `fotocelula` poblado → ValidationError
+- `salidas_wr.raw_words` con 11 ints → ValidationError
+- `horarios.raw_words` con 27 ints → ValidationError
+- `horarios.tramos` con 11 entradas → ValidationError
+- `plc_reloj.raw_words` con 6 ints → ValidationError
+- `reset_temporizado.dm_raw_words` con 5 ints → ValidationError
+
+### 10.4 `tests/test_indexacion.py` (NUEVO)
+
+- Regla del §6: dado `hmi_original.indice_seccion = D1008`, la sección seleccionada cumple `seccion.id == indice_seccion + 1` (cubrir D1008=0 → id=1, D1008=111 → id=112)
 
 ---
 
-## 10. Despliegue
+## 11. Despliegue
 
 1. Detener publisher RPi
 2. Detener subscriber/API Lenovo
 3. Backup SQLite: `cp alumbrado.db alumbrado.db.bak.$(date +%Y%m%d-%H%M%S)`
 4. Actualizar código en ambos nodos (git pull)
-5. Ejecutar migración Alembic: `alembic upgrade head` (incluye backfill horario_tramo)
+5. Ejecutar migración Alembic: `alembic upgrade head` (puramente estructural; sin backfill)
 6. Arrancar subscriber/API Lenovo (verificar que arranca sin errores Pydantic)
 7. Arrancar publisher RPi
 8. Verificación primer ciclo: `read_status` con los 10 bloques v2 en `status='ok'`, modo_label coherente con D116, `cercha_salidas[0].source == 'W4.00'`
 
 ---
 
-## 11. Fuera de alcance (deuda técnica documentada)
+## 12. Fuera de alcance (deuda técnica documentada)
 
 - Escrituras al PLC (read-only mode TFG)
 - Mapeo CIO/bornera físico (`pending_cio_map` — todas las 160 cerchas con `physical_io_confirmed: False`)
