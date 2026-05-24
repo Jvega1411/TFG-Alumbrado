@@ -68,21 +68,22 @@ with engine.connect() as conn:
             c.timestamp,
             c.fins_ok,
             c.secciones_status,
-            coalesce(sum(case when s.manual then 1 else 0 end), 0) as manual,
-            coalesce(sum(case when s.automatico then 1 else 0 end), 0) as automatico,
-            coalesce(sum(case when s.horario_activo then 1 else 0 end), 0) as horario_activo
+            coalesce(sum(case when s.manual_activo then 1 else 0 end), 0) as manual_activo,
+            coalesce(sum(case when s.automatico_calculado then 1 else 0 end), 0) as automatico_calculado,
+            coalesce(sum(case when s.salida_interna then 1 else 0 end), 0) as salida_interna,
+            coalesce(sum(case when s.salida_wr then 1 else 0 end), 0) as salida_wr
         from ciclo c
         left join seccion_estado s on s.ciclo_id = c.id
         group by c.id, c.timestamp, c.fins_ok, c.secciones_status
         order by c.id desc
         limit :limit
     """), {"limit": limit}).mappings().all()
-    print("id | timestamp | fins_ok | sec_status | manual | automatico | horario")
+    print("id | timestamp | fins_ok | sec_status | manual_activo | automatico_calculado | salida_interna | salida_wr")
     for row in rows:
         print(
             f"{row['id']} | {row['timestamp']} | {row['fins_ok']} | "
-            f"{row['secciones_status']} | {row['manual']} | "
-            f"{row['automatico']} | {row['horario_activo']}"
+            f"{row['secciones_status']} | {row['manual_activo']} | "
+            f"{row['automatico_calculado']} | {row['salida_interna']} | {row['salida_wr']}"
         )
 '@ -Arguments @("$Limit")
 
@@ -98,11 +99,12 @@ $resumen.secciones | Format-List
 Write-Host "=== API /api/secciones/actual resumen ==="
 $seccionesResponse = Invoke-WebRequest -Uri "$ApiBase/api/secciones/actual" -UseBasicParsing -TimeoutSec 5
 $secciones = [array]($seccionesResponse.Content | ConvertFrom-Json)
-$manual = @($secciones | Where-Object { $_.manual }).Count
-$automatico = @($secciones | Where-Object { $_.automatico }).Count
-$horario = @($secciones | Where-Object { $_.horario_activo }).Count
-Write-Host "total=$($secciones.Count) manual=$manual automatico=$automatico horario_activo=$horario"
+$manual = @($secciones | Where-Object { $_.manual_activo }).Count
+$automatico = @($secciones | Where-Object { $_.automatico_calculado }).Count
+$interna = @($secciones | Where-Object { $_.salida_interna }).Count
+$wr = @($secciones | Where-Object { $_.salida_wr }).Count
+Write-Host "total=$($secciones.Count) manual_activo=$manual automatico_calculado=$automatico salida_interna=$interna salida_wr=$wr"
 if ($manual -gt 0) {
-    Write-Host "Secciones manual=true:"
-    $secciones | Where-Object { $_.manual } | Select-Object seccion_id,timestamp,ciclo_id | Format-Table -AutoSize
+    Write-Host "Secciones manual_activo=true:"
+    $secciones | Where-Object { $_.manual_activo } | Select-Object seccion_id,timestamp,ciclo_id,manual_activo | Format-Table -AutoSize
 }

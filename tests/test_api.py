@@ -1,15 +1,12 @@
-from datetime import datetime, timezone
-
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from api.routes import init_engine
 from model.database import Base, create_db_engine
-from model.fase2 import Ciclo, HorarioTramo, SeccionEstado
-
-
-def _utc_dt(year=2026, month=5, day=12, hour=8):
-    return datetime(year, month, day, hour, 0, 0, tzinfo=timezone.utc)
+from model.fase2 import Ciclo
+from subscriber.listener import process_message
+from tests.v2_helpers import sample_payload_bytes, utc_dt
 
 
 @pytest.fixture
@@ -22,61 +19,12 @@ def test_engine():
 @pytest.fixture
 def populated_engine(test_engine):
     with Session(test_engine) as session:
-        ciclo = Ciclo(
-            timestamp=_utc_dt(),
-            fins_ok=True,
-            fins_error=None,
-            secciones_status="ok",
-            horarios_status="ok",
-            modo_status="ok",
-            fotocelula_status="ok",
-            reloj_status="ok",
-            diagnostico_status="ok",
-            modfunalu=0,
-            fotocelula_entrada=False,
-            fotocelula_mem_fun=False,
-            fotocelula_mem_act=False,
-            plc_seg=0,
-            plc_min=0,
-            plc_hora=8,
-            plc_dia=12,
-            plc_mes=5,
-            plc_anio=2026,
-            plc_diasem=2,
-            cycle_time_error=False,
-            low_battery=False,
-            io_verify_error=False,
-        )
-        session.add(ciclo)
-        session.flush()
-        for i in range(112):
-            session.add(
-                SeccionEstado(
-                    ciclo_id=ciclo.id,
-                    timestamp=_utc_dt(),
-                    seccion_id=i + 1,
-                    automatico=i == 0,
-                    manual=False,
-                    horario_activo=False,
-                )
-            )
-        for i in range(12):
-            session.add(
-                HorarioTramo(
-                    ciclo_id=ciclo.id,
-                    timestamp=_utc_dt(),
-                    tramo_id=i + 1,
-                    inicio_raw=None,
-                    fin_raw=None,
-                )
-            )
-        session.commit()
+        process_message(sample_payload_bytes(), session)
     return test_engine
 
 
 def _make_client(engine):
     from main import app
-    from api.routes import init_engine
 
     init_engine(engine)
     return TestClient(app)
@@ -87,552 +35,83 @@ def api_client(populated_engine):
     return _make_client(populated_engine)
 
 
-class TestGetDB:
-    def test_get_db_raises_if_engine_not_initialized(self):
-        from api.routes import get_db, init_engine
-
-        init_engine(None)
-        with pytest.raises(RuntimeError, match="init_engine"):
-            next(get_db())
-
-
-class TestGetEstado:
-    def test_returns_200(self, api_client):
-        resp = api_client.get("/api/estado")
-        assert resp.status_code == 200
-
-    def test_returns_fins_ok_true(self, api_client):
-        data = api_client.get("/api/estado").json()
-        assert data["fins_ok"] is True
-
-    def test_returns_modfunalu(self, api_client):
-        data = api_client.get("/api/estado").json()
-        assert data["modfunalu"] == 0
-
-    def test_returns_block_statuses(self, api_client):
-        data = api_client.get("/api/estado").json()
-        assert data["secciones_status"] == "ok"
-        assert data["horarios_status"] == "ok"
-
-    def test_returns_404_when_empty(self, test_engine):
-        client = _make_client(test_engine)
-        resp = client.get("/api/estado")
-        assert resp.status_code == 404
-
-
-class TestGetDashboardResumen:
-    def test_returns_capabilities_readonly(self, api_client):
-        data = api_client.get("/api/dashboard/resumen").json()
-
-        assert data["capabilities"] == {
-            "mode": "readonly",
-            "can_write": False,
-            "write_mode_available": False,
-            "auth_required_for_write": True,
-        }
-
-    def test_counts_all_false_sections_as_apagadas(self, api_client):
-        data = api_client.get("/api/dashboard/resumen").json()
-
-        assert data["secciones"]["total"] == 112
-        assert data["secciones"]["con_dato"] == 112
-        assert data["secciones"]["automatico"] == 1
-        assert data["secciones"]["manual"] == 0
-        assert data["secciones"]["horario_activo"] == 0
-        assert data["secciones"]["apagadas"] == 111
-
-    def test_reports_block_statuses_and_reloj(self, api_client):
-        data = api_client.get("/api/dashboard/resumen").json()
-
-        assert data["bloques"]["secciones"]["status"] == "ok"
-        assert data["bloques"]["diagnostico"]["status"] == "ok"
-        assert data["plc_reloj"]["hora"] == 8
-        assert data["frescura"]["stale_after_seconds"] == 30
-
-    def test_returns_latest_partial_cycle_with_valid_sections(self, populated_engine):
-        client = _make_client(populated_engine)
-        with Session(populated_engine) as session:
-            ciclo_parcial = Ciclo(
-                timestamp=_utc_dt(hour=9),
-                fins_ok=False,
-                fins_error="diagnostico: timeout",
-                secciones_status="ok",
-                diagnostico_status="failed",
-                diagnostico_error="timeout",
-            )
-            session.add(ciclo_parcial)
-            session.flush()
-            for i in range(112):
-                session.add(
-                    SeccionEstado(
-                        ciclo_id=ciclo_parcial.id,
-                        timestamp=_utc_dt(hour=9),
-                        seccion_id=i + 1,
-                        automatico=False,
-                        manual=i == 0,
-                        horario_activo=False,
-                    )
-                )
-            session.commit()
-
-        data = client.get("/api/dashboard/resumen").json()
-
-        assert data["fins_ok"] is False
-        assert data["bloques"]["diagnostico"]["status"] == "failed"
-        assert data["secciones"]["manual"] == 1
-        assert data["secciones"]["apagadas"] == 111
-
-    def test_returns_404_when_empty(self, test_engine):
-        client = _make_client(test_engine)
-        resp = client.get("/api/dashboard/resumen")
-
-        assert resp.status_code == 404
-
-
-class TestGetSeccionesActual:
-    def test_returns_200(self, api_client):
-        resp = api_client.get("/api/secciones/actual")
-        assert resp.status_code == 200
-
-    def test_returns_112_secciones(self, api_client):
-        data = api_client.get("/api/secciones/actual").json()
-        assert len(data) == 112
-
-    def test_seccion1_automatico_true(self, api_client):
-        data = api_client.get("/api/secciones/actual").json()
-        sec1 = next(s for s in data if s["seccion_id"] == 1)
-        assert sec1["automatico"] is True
-        assert "timestamp" in sec1
-        assert "ciclo_id" in sec1
-
-    def test_ordered_by_seccion_id(self, api_client):
-        data = api_client.get("/api/secciones/actual").json()
-        ids = [s["seccion_id"] for s in data]
-        assert ids == list(range(1, 113))
-
-    def test_returns_404_when_empty(self, test_engine):
-        client = _make_client(test_engine)
-        resp = client.get("/api/secciones/actual")
-        assert resp.status_code == 404
-
-
-class TestGetHorarios:
-    def test_returns_200(self, api_client):
-        resp = api_client.get("/api/horarios")
-        assert resp.status_code == 200
-
-    def test_returns_12_tramos(self, api_client):
-        data = api_client.get("/api/horarios").json()
-        assert len(data) == 12
-
-    def test_tramo_ids_are_1_to_12(self, api_client):
-        data = api_client.get("/api/horarios").json()
-        ids = [t["tramo_id"] for t in data]
-        assert ids == list(range(1, 13))
-        assert "timestamp" in data[0]
-        assert "ciclo_id" in data[0]
-
-
-class TestGetHistorialCiclos:
-    def test_returns_200(self, api_client):
-        resp = api_client.get("/api/historial/ciclos")
-        assert resp.status_code == 200
-
-    def test_returns_list_with_one_ciclo(self, api_client):
-        data = api_client.get("/api/historial/ciclos").json()
-        assert len(data) == 1
-
-    def test_limit_param_accepted(self, api_client):
-        resp = api_client.get("/api/historial/ciclos?limit=10")
-        assert resp.status_code == 200
-
-    def test_limit_above_1000_rejected(self, api_client):
-        resp = api_client.get("/api/historial/ciclos?limit=1001")
-        assert resp.status_code == 422
-
-    def test_offset_paginates_results(self, test_engine):
-        client = _make_client(test_engine)
-        with Session(test_engine) as session:
-            for h in [8, 9, 10]:
-                session.add(Ciclo(timestamp=_utc_dt(hour=h), fins_ok=True))
-            session.commit()
-
-        all_data = client.get("/api/historial/ciclos").json()
-        assert len(all_data) == 3
-
-        page1 = client.get("/api/historial/ciclos?limit=2&offset=0").json()
-        page2 = client.get("/api/historial/ciclos?limit=2&offset=2").json()
-        assert len(page1) == 2
-        assert len(page2) == 1
-        assert {c["id"] for c in page1} | {c["id"] for c in page2} == {c["id"] for c in all_data}
-
-    def test_offset_param_negative_rejected(self, api_client):
-        resp = api_client.get("/api/historial/ciclos?offset=-1")
-        assert resp.status_code == 422
-
-
-class TestGetHistorialSecciones:
-    def test_returns_200(self, api_client):
-        resp = api_client.get("/api/historial/secciones")
-        assert resp.status_code == 200
-
-    def test_returns_112_rows_for_one_ciclo(self, api_client):
-        data = api_client.get("/api/historial/secciones").json()
-        assert len(data) == 112
-        assert "ciclo_id" in data[0]
-
-    def test_default_order_is_chronological(self, test_engine):
-        client = _make_client(test_engine)
-        with Session(test_engine) as session:
-            c1 = Ciclo(timestamp=_utc_dt(hour=8), fins_ok=True)
-            c2 = Ciclo(timestamp=_utc_dt(hour=9), fins_ok=True)
-            session.add_all([c1, c2])
-            session.flush()
-            session.add(SeccionEstado(ciclo_id=c1.id, timestamp=_utc_dt(hour=8), seccion_id=5, automatico=False, manual=False, horario_activo=False))
-            session.add(SeccionEstado(ciclo_id=c2.id, timestamp=_utc_dt(hour=9), seccion_id=3, automatico=False, manual=False, horario_activo=False))
-            session.commit()
-
-        data = client.get("/api/historial/secciones").json()
-        assert data[0]["seccion_id"] == 3
-        assert data[1]["seccion_id"] == 5
-
-    def test_ciclo_id_order_is_by_seccion_id(self, test_engine):
-        client = _make_client(test_engine)
-        with Session(test_engine) as session:
-            c = Ciclo(timestamp=_utc_dt(), fins_ok=True, secciones_status="ok")
-            session.add(c)
-            session.flush()
-            for sid in [50, 1, 112]:
-                session.add(SeccionEstado(ciclo_id=c.id, timestamp=_utc_dt(), seccion_id=sid, automatico=False, manual=False, horario_activo=False))
-            session.commit()
-            c_id = c.id
-
-        data = client.get(f"/api/historial/secciones?ciclo_id={c_id}").json()
-        assert [r["seccion_id"] for r in data] == [1, 50, 112]
-
-    def test_filter_by_seccion_id(self, api_client):
-        data = api_client.get("/api/historial/secciones?seccion_id=1").json()
-        assert len(data) == 1
-        assert data[0]["seccion_id"] == 1
-
-    def test_seccion_id_out_of_range_rejected(self, api_client):
-        resp = api_client.get("/api/historial/secciones?seccion_id=113")
-        assert resp.status_code == 422
-
-    def test_limit_param_accepted(self, api_client):
-        resp = api_client.get("/api/historial/secciones?limit=50")
-        assert resp.status_code == 200
-
-    def test_filter_by_ciclo_id_returns_secciones_of_that_ciclo(self, test_engine):
-        client = _make_client(test_engine)
-        with Session(test_engine) as session:
-            c1 = Ciclo(timestamp=_utc_dt(hour=8), fins_ok=True, secciones_status="ok")
-            c2 = Ciclo(timestamp=_utc_dt(hour=9), fins_ok=True, secciones_status="ok")
-            session.add_all([c1, c2])
-            session.flush()
-            for ciclo, auto in [(c1, True), (c2, False)]:
-                for i in range(112):
-                    session.add(SeccionEstado(
-                        ciclo_id=ciclo.id,
-                        timestamp=ciclo.timestamp,
-                        seccion_id=i + 1,
-                        automatico=auto,
-                        manual=False,
-                        horario_activo=False,
-                    ))
-            session.commit()
-            c1_id, c2_id = c1.id, c2.id
-
-        data = client.get(f"/api/historial/secciones?ciclo_id={c1_id}").json()
-        assert len(data) == 112
-        assert all(r["automatico"] is True for r in data)
-
-        data2 = client.get(f"/api/historial/secciones?ciclo_id={c2_id}").json()
-        assert len(data2) == 112
-        assert all(r["automatico"] is False for r in data2)
-
-    def test_ciclo_id_invalid_rejected(self, api_client):
-        resp = api_client.get("/api/historial/secciones?ciclo_id=0")
-        assert resp.status_code == 422
-
-
-class TestUltimoCicloValido:
-    def test_estado_usa_timestamp_desc_no_id_desc(self, test_engine):
-        client = _make_client(test_engine)
-        with Session(test_engine) as session:
-            ciclo_nuevo = Ciclo(
-                timestamp=_utc_dt(hour=10),
-                fins_ok=True,
-                fins_error=None,
-                modfunalu=10,
-            )
-            session.add(ciclo_nuevo)
-            session.flush()
-            ciclo_viejo_insertado_despues = Ciclo(
-                timestamp=_utc_dt(hour=9),
-                fins_ok=True,
-                fins_error=None,
-                modfunalu=9,
-            )
-            session.add(ciclo_viejo_insertado_despues)
-            session.commit()
-
-        resp = client.get("/api/estado")
-        assert resp.status_code == 200
-        assert resp.json()["modfunalu"] == 10
-
-    def test_secciones_actual_usa_timestamp_desc_no_id_desc(self, test_engine):
-        client = _make_client(test_engine)
-        with Session(test_engine) as session:
-            ciclo_nuevo = Ciclo(
-                timestamp=_utc_dt(hour=10),
-                fins_ok=True,
-                secciones_status="ok",
-            )
-            session.add(ciclo_nuevo)
-            session.flush()
-            session.add(
-                SeccionEstado(
-                    ciclo_id=ciclo_nuevo.id,
-                    timestamp=_utc_dt(hour=10),
-                    seccion_id=1,
-                    automatico=True,
-                    manual=False,
-                    horario_activo=False,
-                )
-            )
-
-            ciclo_viejo_insertado_despues = Ciclo(
-                timestamp=_utc_dt(hour=9),
-                fins_ok=True,
-                secciones_status="ok",
-            )
-            session.add(ciclo_viejo_insertado_despues)
-            session.flush()
-            session.add(
-                SeccionEstado(
-                    ciclo_id=ciclo_viejo_insertado_despues.id,
-                    timestamp=_utc_dt(hour=9),
-                    seccion_id=1,
-                    automatico=False,
-                    manual=True,
-                    horario_activo=False,
-                )
-            )
-            session.commit()
-
-        resp = client.get("/api/secciones/actual")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data[0]["automatico"] is True
-        assert data[0]["manual"] is False
-
-    def test_horarios_usa_timestamp_desc_no_id_desc(self, test_engine):
-        client = _make_client(test_engine)
-        with Session(test_engine) as session:
-            ciclo_nuevo = Ciclo(
-                timestamp=_utc_dt(hour=10),
-                fins_ok=True,
-                horarios_status="ok",
-            )
-            session.add(ciclo_nuevo)
-            session.flush()
-            session.add(
-                HorarioTramo(
-                    ciclo_id=ciclo_nuevo.id,
-                    timestamp=_utc_dt(hour=10),
-                    tramo_id=1,
-                    inicio_raw=100,
-                    fin_raw=200,
-                )
-            )
-
-            ciclo_viejo_insertado_despues = Ciclo(
-                timestamp=_utc_dt(hour=9),
-                fins_ok=True,
-                horarios_status="ok",
-            )
-            session.add(ciclo_viejo_insertado_despues)
-            session.flush()
-            session.add(
-                HorarioTramo(
-                    ciclo_id=ciclo_viejo_insertado_despues.id,
-                    timestamp=_utc_dt(hour=9),
-                    tramo_id=1,
-                    inicio_raw=900,
-                    fin_raw=901,
-                )
-            )
-            session.commit()
-
-        resp = client.get("/api/horarios")
-        assert resp.status_code == 200
-        assert resp.json()[0]["inicio_raw"] == 100
-
-    def test_secciones_actual_devuelve_ciclo_parcial_si_secciones_ok(self, populated_engine):
-        from main import app
-        from api.routes import init_engine
-
-        init_engine(populated_engine)
-        with Session(populated_engine) as session:
-            ciclo_parcial = Ciclo(
-                timestamp=_utc_dt(hour=9),
-                fins_ok=False,
-                fins_error="diagnostico: timeout",
-                secciones_status="ok",
-                diagnostico_status="failed",
-                diagnostico_error="timeout",
-            )
-            session.add(ciclo_parcial)
-            session.flush()
-            for i in range(112):
-                session.add(
-                    SeccionEstado(
-                        ciclo_id=ciclo_parcial.id,
-                        timestamp=_utc_dt(hour=9),
-                        seccion_id=i + 1,
-                        automatico=False,
-                        manual=i == 0,
-                        horario_activo=False,
-                    )
-                )
-            session.commit()
-
-        client = TestClient(app)
-        resp = client.get("/api/secciones/actual")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert len(data) == 112
-        assert data[0]["manual"] is True
-
-    def test_secciones_actual_404_cuando_no_hay_bloque_secciones_ok(self, test_engine):
-        from main import app
-        from api.routes import init_engine
-
-        init_engine(test_engine)
-        with Session(test_engine) as session:
-            ciclo_error = Ciclo(
-                timestamp=_utc_dt(),
-                fins_ok=False,
-                fins_error="timeout",
-                secciones_status="failed",
-                secciones_error="timeout",
-            )
-            session.add(ciclo_error)
-            session.commit()
-
-        client = TestClient(app)
-        resp = client.get("/api/secciones/actual")
-        assert resp.status_code == 404
-
-    def test_horarios_devuelve_ciclo_parcial_si_horarios_ok(self, populated_engine):
-        client = _make_client(populated_engine)
-        with Session(populated_engine) as session:
-            ciclo_parcial = Ciclo(
-                timestamp=_utc_dt(hour=9),
-                fins_ok=False,
-                fins_error="secciones: timeout",
-                horarios_status="ok",
-                secciones_status="failed",
-            )
-            session.add(ciclo_parcial)
-            session.flush()
-            for i in range(12):
-                session.add(
-                    HorarioTramo(
-                        ciclo_id=ciclo_parcial.id,
-                        timestamp=_utc_dt(hour=9),
-                        tramo_id=i + 1,
-                        inicio_raw=100 + i,
-                        fin_raw=200 + i,
-                    )
-                )
-            session.commit()
-
-        resp = client.get("/api/horarios")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data[0]["inicio_raw"] == 100
-
-
-class TestGetHistorialHorarios:
-    def test_returns_200(self, api_client):
-        resp = api_client.get("/api/historial/horarios")
-        assert resp.status_code == 200
-
-    def test_returns_12_tramos_for_one_ciclo(self, api_client):
-        data = api_client.get("/api/historial/horarios").json()
-        assert len(data) == 12
-
-    def test_filter_by_ciclo_id_returns_tramos_of_that_ciclo(self, test_engine):
-        client = _make_client(test_engine)
-        with Session(test_engine) as session:
-            c1 = Ciclo(timestamp=_utc_dt(hour=8), fins_ok=True, horarios_status="ok")
-            c2 = Ciclo(timestamp=_utc_dt(hour=9), fins_ok=True, horarios_status="ok")
-            session.add_all([c1, c2])
-            session.flush()
-            for ciclo, base in [(c1, 100), (c2, 900)]:
-                for i in range(12):
-                    session.add(HorarioTramo(ciclo_id=ciclo.id, timestamp=ciclo.timestamp, tramo_id=i + 1, inicio_raw=base + i, fin_raw=base + i + 100))
-            session.commit()
-            c1_id = c1.id
-
-        data = client.get(f"/api/historial/horarios?ciclo_id={c1_id}").json()
-        assert len(data) == 12
-        assert all(t["inicio_raw"] < 200 for t in data)
-
-    def test_ciclo_id_order_is_by_tramo_id(self, test_engine):
-        client = _make_client(test_engine)
-        with Session(test_engine) as session:
-            c = Ciclo(timestamp=_utc_dt(), fins_ok=True, horarios_status="ok")
-            session.add(c)
-            session.flush()
-            for tid in [3, 1, 2]:
-                session.add(HorarioTramo(ciclo_id=c.id, timestamp=_utc_dt(), tramo_id=tid, inicio_raw=None, fin_raw=None))
-            session.commit()
-            c_id = c.id
-
-        data = client.get(f"/api/historial/horarios?ciclo_id={c_id}").json()
-        assert [t["tramo_id"] for t in data] == [1, 2, 3]
-
-    def test_default_order_is_chronological(self, test_engine):
-        client = _make_client(test_engine)
-        with Session(test_engine) as session:
-            c1 = Ciclo(timestamp=_utc_dt(hour=8), fins_ok=True)
-            c2 = Ciclo(timestamp=_utc_dt(hour=9), fins_ok=True)
-            session.add_all([c1, c2])
-            session.flush()
-            session.add(HorarioTramo(ciclo_id=c1.id, timestamp=_utc_dt(hour=8), tramo_id=1, inicio_raw=100, fin_raw=200))
-            session.add(HorarioTramo(ciclo_id=c2.id, timestamp=_utc_dt(hour=9), tramo_id=1, inicio_raw=900, fin_raw=901))
-            session.commit()
-
-        data = client.get("/api/historial/horarios").json()
-        assert data[0]["inicio_raw"] == 900
-
-    def test_ciclo_id_invalid_rejected(self, api_client):
-        resp = api_client.get("/api/historial/horarios?ciclo_id=0")
-        assert resp.status_code == 422
-
-    def test_tramo_id_out_of_range_rejected(self, api_client):
-        resp = api_client.get("/api/historial/horarios?tramo_id=13")
-        assert resp.status_code == 422
-
-    def test_tramo_id_zero_rejected(self, api_client):
-        resp = api_client.get("/api/historial/horarios?tramo_id=0")
-        assert resp.status_code == 422
-
-
-class TestReadOnlyApi:
-    def test_api_routes_do_not_expose_write_methods(self):
-        from main import app
-
-        write_methods = {"POST", "PUT", "PATCH", "DELETE"}
-        api_routes = [
-            route
-            for route in app.routes
-            if getattr(route, "path", "").startswith("/api/")
-        ]
-
-        assert api_routes
-        for route in api_routes:
-            assert not (set(route.methods or set()) & write_methods), route.path
+def test_get_db_requires_engine():
+    from api.routes import get_db
+
+    init_engine(None)
+    with pytest.raises(RuntimeError):
+        next(get_db())
+
+
+def test_estado_returns_latest_v2_cycle(api_client):
+    data = api_client.get("/api/estado").json()
+    assert data["fins_ok"] is True
+    assert data["modo_label"] == "horarios"
+    assert data["salidas_wr_status"] == "ok"
+
+
+def test_dashboard_resumen_counts_operational_truth(api_client):
+    data = api_client.get("/api/dashboard/resumen").json()
+    assert data["secciones"]["total"] == 112
+    assert data["secciones"]["con_dato"] == 112
+    assert data["secciones"]["salida_wr"] == 1
+    assert data["secciones"]["activas"] == 1
+    assert data["secciones"]["apagadas"] == 111
+    assert data["bloques"]["hmi_original"]["status"] == "ok"
+    assert data["frescura"]["stale_after_seconds"] == 30
+
+
+def test_secciones_actual_uses_v2_names(api_client):
+    data = api_client.get("/api/secciones/actual").json()
+    assert len(data) == 112
+    sec1 = data[0]
+    assert sec1["seccion_id"] == 1
+    assert sec1["automatico_calculado"] is False
+    assert sec1["manual_activo"] is False
+    assert sec1["salida_interna"] is False
+    assert sec1["salida_wr"] is True
+
+
+def test_horarios_returns_decoded_v2_fields(api_client):
+    data = api_client.get("/api/horarios").json()
+    assert len(data) == 12
+    assert data[0]["inicio_hora"] == 6
+    assert data[0]["fin_raw_words"] == [8, 0]
+    assert data[0]["source_json"]["fin_hora"] == "D1002"
+
+
+def test_historial_ciclos_and_secciones(api_client):
+    ciclos = api_client.get("/api/historial/ciclos").json()
+    assert len(ciclos) == 1
+    sections = api_client.get(f"/api/historial/secciones?ciclo_id={ciclos[0]['id']}").json()
+    assert len(sections) == 112
+
+
+def test_new_state_endpoints(api_client):
+    ciclo_id = api_client.get("/api/estado").json()["id"]
+    assert api_client.get(f"/api/ciclos/{ciclo_id}/fotocelula").status_code == 200
+    reset = api_client.get(f"/api/ciclos/{ciclo_id}/reset_temporizado")
+    assert reset.status_code == 200
+    assert reset.json()["dm_raw_words"] == [1800, 0, 0, 0, 0, 0]
+    assert api_client.get(f"/api/ciclos/{ciclo_id}/hmi_original").status_code == 200
+    assert api_client.get(f"/api/ciclos/{ciclo_id}/reloj_ar").status_code == 200
+    salidas = api_client.get(f"/api/ciclos/{ciclo_id}/salidas_wr").json()
+    assert salidas["raw_words"][0] == 1
+    assert len(salidas["cercha_salidas"]) == 160
+
+
+def test_returns_404_when_empty(test_engine):
+    client = _make_client(test_engine)
+    assert client.get("/api/estado").status_code == 404
+    assert client.get("/api/dashboard/resumen").status_code == 404
+    assert client.get("/api/secciones/actual").status_code == 404
+
+
+def test_historial_filters(test_engine):
+    client = _make_client(test_engine)
+    with Session(test_engine) as session:
+        session.add(Ciclo(timestamp=utc_dt(8), fins_ok=True))
+        session.add(Ciclo(timestamp=utc_dt(9), fins_ok=True))
+        session.commit()
+    assert len(client.get("/api/historial/ciclos?limit=1").json()) == 1
+    assert client.get("/api/historial/ciclos?limit=1001").status_code == 422

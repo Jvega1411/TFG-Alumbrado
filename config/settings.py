@@ -45,7 +45,7 @@ class Config:
     DB_PORT: int     = int(os.getenv('DB_PORT', '1433'))
 
     # Adquisición
-    ACQUISITION_INTERVAL_S: float = float(os.getenv('ACQUISITION_INTERVAL_S', '10.0'))
+    ACQUISITION_INTERVAL_S: float = float(os.getenv('ACQUISITION_INTERVAL_S', '2.0'))
 
     # Logging
     LOG_DIR: Path = _project_root / os.getenv('LOG_DIR', 'logs')
@@ -68,13 +68,13 @@ class Config:
     MQTT_CLIENT_ID: str         = os.getenv('MQTT_CLIENT_ID', 'alumbrado-publisher')
     MQTT_USERNAME: str          = os.getenv('MQTT_USERNAME', '')
     MQTT_PASSWORD: str          = os.getenv('MQTT_PASSWORD', '')
-    HEARTBEAT_INTERVAL_S: float = float(os.getenv('HEARTBEAT_INTERVAL_S', '300.0'))
+    HEARTBEAT_INTERVAL_S: float = float(os.getenv('HEARTBEAT_INTERVAL_S', '30.0'))
 
     # FastAPI — 127.0.0.1 por defecto para no exponer en todas las interfaces sin config explícita
     API_HOST: str = os.getenv('API_HOST', '127.0.0.1')
     API_PORT: int = int(os.getenv('API_PORT', '8000'))
 
-    # BD — False en producción: usar `alembic upgrade head` en vez de create_all automático
+    # BD — False cuando el esquema V2 ya existe; true crea tablas limpias desde modelos.
     DB_AUTO_CREATE: bool = os.getenv('DB_AUTO_CREATE', 'false').lower() == 'true'
 
     @staticmethod
@@ -104,8 +104,11 @@ class Config:
             raise ValueError("UDP_LOCAL_HOST no debe abrir FINS en todas las interfaces")
         if cls.UDP_LOCAL_HOST != cls.UDP_LOCAL_HOST.strip():
             raise ValueError("UDP_LOCAL_HOST no puede tener espacios al inicio o final")
-        if cls.ACQUISITION_INTERVAL_S <= 0:
-            raise ValueError(f"ACQUISITION_INTERVAL_S debe ser positivo: {cls.ACQUISITION_INTERVAL_S}")
+        if cls.ACQUISITION_INTERVAL_S < 2.0:
+            raise ValueError(
+                "ACQUISITION_INTERVAL_S no debe bajar de 2.0s contra el PLC real: "
+                f"{cls.ACQUISITION_INTERVAL_S}"
+            )
         if not (1 <= cls.DB_PORT <= 65535):
             raise ValueError(f"DB_PORT fuera de rango: {cls.DB_PORT}")
 

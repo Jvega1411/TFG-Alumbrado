@@ -12,115 +12,65 @@ def _utc_now():
     return datetime.now(tz=timezone.utc)
 
 
-class TestCicloResponse:
-    def test_from_dict(self):
-        data = {
-            "id": 1,
-            "timestamp": _utc_now(),
-            "fins_ok": True,
-            "fins_error": None,
-            "secciones_status": "ok",
-            "horarios_status": "ok",
-            "modfunalu": 0,
-            "fotocelula_entrada": False,
-            "fotocelula_mem_fun": False,
-            "fotocelula_mem_act": False,
-            "plc_seg": 0,
-            "plc_min": 30,
-            "plc_hora": 8,
-            "plc_dia": 12,
-            "plc_mes": 5,
-            "plc_anio": 2026,
-            "plc_diasem": 2,
-            "cycle_time_error": False,
-            "low_battery": False,
-            "io_verify_error": False,
-        }
-        resp = CicloResponse(**data)
-        assert resp.id == 1
-        assert resp.fins_ok is True
-        assert resp.modfunalu == 0
-        assert resp.secciones_status == "ok"
-
-    def test_optional_fields_can_be_none(self):
-        data = {
-            "id": 2,
-            "timestamp": _utc_now(),
-            "fins_ok": False,
-            "fins_error": "MRES=0x21",
-            "modfunalu": None,
-            "fotocelula_entrada": None,
-            "fotocelula_mem_fun": None,
-            "fotocelula_mem_act": None,
-            "plc_seg": None,
-            "plc_min": None,
-            "plc_hora": None,
-            "plc_dia": None,
-            "plc_mes": None,
-            "plc_anio": None,
-            "plc_diasem": None,
-            "cycle_time_error": None,
-            "low_battery": None,
-            "io_verify_error": None,
-        }
-        resp = CicloResponse(**data)
-        assert resp.fins_ok is False
-        assert resp.modfunalu is None
+def test_ciclo_response_accepts_v2_fields():
+    resp = CicloResponse(
+        id=1,
+        timestamp=_utc_now(),
+        fins_ok=True,
+        fins_error=None,
+        secciones_status="ok",
+        salidas_wr_status="ok",
+        modfunalu=0,
+        modo_label="horarios",
+        plc_hora=8,
+    )
+    assert resp.modo_label == "horarios"
+    assert resp.salidas_wr_status == "ok"
 
 
-class TestSeccionEstadoResponse:
-    def test_from_dict(self):
-        data = {
-            "ciclo_id": 10,
-            "timestamp": _utc_now(),
-            "seccion_id": 1,
-            "automatico": True,
-            "manual": False,
-            "horario_activo": True,
-        }
-        resp = SeccionEstadoResponse(**data)
-        assert resp.ciclo_id == 10
-        assert resp.seccion_id == 1
-        assert resp.automatico is True
-
-    def test_all_false(self):
-        data = {
-            "ciclo_id": 10,
-            "timestamp": _utc_now(),
-            "seccion_id": 112,
-            "automatico": False,
-            "manual": False,
-            "horario_activo": False,
-        }
-        resp = SeccionEstadoResponse(**data)
-        assert resp.manual is False
+def test_seccion_estado_response_uses_v2_names():
+    resp = SeccionEstadoResponse(
+        ciclo_id=10,
+        timestamp=_utc_now(),
+        seccion_id=1,
+        automatico_calculado=False,
+        manual_activo=True,
+        salida_interna=False,
+        salida_wr=True,
+    )
+    assert resp.manual_activo is True
+    assert resp.salida_wr is True
 
 
-class TestHorarioTramoResponse:
-    def test_from_dict(self):
-        data = {"ciclo_id": 10, "timestamp": _utc_now(), "tramo_id": 3, "inicio_raw": 480, "fin_raw": 1320}
-        resp = HorarioTramoResponse(**data)
-        assert resp.ciclo_id == 10
-        assert resp.tramo_id == 3
-        assert resp.inicio_raw == 480
+def test_horario_tramo_response_has_v2_decoded_fields():
+    resp = HorarioTramoResponse(
+        ciclo_id=10,
+        timestamp=_utc_now(),
+        tramo_id=3,
+        inicio_raw=None,
+        fin_raw=None,
+        inicio_raw_words=None,
+        fin_raw_words="[8, 0]",
+        source_json='{"fin_hora":"D3632"}',
+        inicio_hora=None,
+        inicio_minuto=None,
+        fin_hora=8,
+        fin_minuto=0,
+    )
+    assert resp.tramo_id == 3
+    assert resp.fin_hora == 8
+    assert resp.fin_raw_words == [8, 0]
+    assert resp.source_json == {"fin_hora": "D3632"}
 
-    def test_nullable_fields(self):
-        data = {"ciclo_id": 10, "timestamp": _utc_now(), "tramo_id": 1, "inicio_raw": None, "fin_raw": None}
-        resp = HorarioTramoResponse(**data)
-        assert resp.inicio_raw is None
 
-
-class TestSeccionHistorialResponse:
-    def test_from_dict(self):
-        data = {
-            "ciclo_id": 10,
-            "timestamp": _utc_now(),
-            "seccion_id": 5,
-            "automatico": True,
-            "manual": False,
-            "horario_activo": False,
-        }
-        resp = SeccionHistorialResponse(**data)
-        assert resp.ciclo_id == 10
-        assert resp.seccion_id == 5
-        assert resp.automatico is True
+def test_seccion_historial_response_inherits_section_shape():
+    resp = SeccionHistorialResponse(
+        ciclo_id=10,
+        timestamp=_utc_now(),
+        seccion_id=5,
+        automatico_calculado=True,
+        manual_activo=False,
+        salida_interna=False,
+        salida_wr=False,
+    )
+    assert resp.automatico_calculado is True

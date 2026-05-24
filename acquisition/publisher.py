@@ -23,7 +23,7 @@ def _without_runtime_fields(payload: dict) -> dict:
     return {
         key: value
         for key, value in payload.items()
-        if key not in ('ts', 'plc_reloj')
+        if key not in ('ts', 'plc_reloj', 'reloj_ar')
     }
 
 

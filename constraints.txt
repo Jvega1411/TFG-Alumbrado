@@ -1,7 +1,6 @@
 # Local reproducibility snapshot. Regenerate for the deployment target before release.
 python-dotenv==1.0.1
 sqlalchemy==2.0.49
-alembic==1.16.5
 fastapi==0.110.1
 uvicorn==0.29.0
 pydantic==2.11.4

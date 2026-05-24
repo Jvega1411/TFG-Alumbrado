@@ -72,7 +72,6 @@ Keep these as the main maintained surfaces:
 - `web/`: dashboard static assets.
 - `scripts/node-config/`: deploy and node configuration helpers.
 - `tests/`: local verification.
-- `alembic/`: migrations.
 
 Avoid adding new top-level folders unless they are part of runtime, deployment,
 or tests.

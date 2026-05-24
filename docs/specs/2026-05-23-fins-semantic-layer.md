@@ -2,7 +2,7 @@
 
 **Fecha:** 2026-05-23  
 **Revisión:** 3 (ajustes de contrato/implementación: helper words(), strict types, validadores semánticos, JSON columns para horario_tramo)  
-**Estrategia de migración:** Clean break — schema_version=2 obligatorio, sin compatibilidad v1  
+**Estrategia de despliegue:** Clean break — schema_version=2 obligatorio, BD V2 limpia, sin compatibilidad v1
 **Alcance:** acquisition (poller + decoders), subscriber (schema + listener), model, schemas API, tests
 
 ---
@@ -24,10 +24,13 @@ El pipeline actual usa nombres de campo heredados del HMI que no reflejan la sem
 | `subscriber/payload_schema.py` | REESCRIBIR — modelos Pydantic v2, 10 bloques exactos |
 | `subscriber/listener.py` | ACTUALIZAR — campos v2, nuevos bloques |
 | `model/fase2.py` | ACTUALIZAR — columnas renombradas/añadidas, tablas nuevas |
-| `alembic/versions/` | NUEVA revisión v2 (`20260524_0003_v2_semantic_layer.py`) |
 | `schemas/lectura.py` | ACTUALIZAR — response models API |
+| `api/routes.py` | ACTUALIZAR — agregaciones por nombre v2 + nuevos endpoints |
+| `web/static/app.js` | ACTUALIZAR — labels y bitBadges con campos v2 |
 | `tests/test_poller.py` | ACTUALIZAR — tests v2 |
+| `tests/test_payload_schema.py` | ACTUALIZAR — validadores semánticos v2 |
 | `tests/test_decoders.py` | CREAR — tests unitarios de decoders |
+| `tests/test_indexacion.py` | CREAR — regla 1-based vs D1008 |
 | `fins/` | SIN CAMBIOS |
 
 ---
@@ -421,6 +424,14 @@ class ReadBlockStatus(BaseModel):
     status: Literal['ok', 'failed']        # 'absent' eliminado en v2
     error: str | None = None
 
+    @model_validator(mode='after')
+    def _check_error_matches_status(self) -> 'ReadBlockStatus':
+        if self.status == 'ok' and self.error is not None:
+            raise ValueError("status='ok' requiere error=None")
+        if self.status == 'failed' and (self.error is None or not self.error.strip()):
+            raise ValueError("status='failed' requiere error con texto no vacío")
+        return self
+
 class SeccionPayload(BaseModel):
     model_config = ConfigDict(extra='forbid')
     id: StrictInt                          # 1..112 (ver §6 Indexación)
@@ -436,8 +447,10 @@ class TramoPayload(BaseModel):
     inicio_minuto: StrictInt | None
     fin_hora: StrictInt
     fin_minuto: StrictInt
-    inicio_raw: list[StrictInt] | None = None
-    fin_raw: list[StrictInt] = Field(default_factory=list)
+    # inicio_raw: None para tramos 3-12; lista de exactamente 2 ints (hora_word, min_word) en 1-2
+    inicio_raw: Annotated[list[StrictInt], Field(min_length=2, max_length=2)] | None = None
+    # fin_raw: SIEMPRE exactamente 2 ints (fin disponible en los 12 tramos)
+    fin_raw: Annotated[list[StrictInt], Field(min_length=2, max_length=2)]
     source: dict[str, str] = Field(default_factory=dict)
 
 class HorariosPayload(BaseModel):
@@ -576,6 +589,8 @@ class LecturaPayload(BaseModel):
             raise ValueError("fins_ok debe ser True si y solo si los 10 bloques tienen status='ok'")
         if self.fins_ok and self.fins_error is not None:
             raise ValueError("fins_ok=True requiere fins_error=None")
+        if not self.fins_ok and (self.fins_error is None or not self.fins_error.strip()):
+            raise ValueError("fins_ok=False requiere fins_error con texto no vacío")
         return self
 
     @model_validator(mode='after')
@@ -619,6 +634,21 @@ class LecturaPayload(BaseModel):
             cids = sorted(c.id for c in self.salidas_wr.cercha_salidas)
             if cids != list(range(1, 161)):
                 raise ValueError("salidas_wr ok requiere cercha_salidas ids 1..160")
+
+        # Espejo: si ambos OK, cada seccion.salida_wr DEBE coincidir con
+        # cercha_salidas[id-1].activa (id 1..112). Si difieren, productor v2 inválido.
+        if is_ok('secciones') and is_ok('salidas_wr'):
+            by_id = {c.id: c.activa for c in self.salidas_wr.cercha_salidas}
+            for s in self.secciones:
+                if s.salida_wr is None:
+                    raise ValueError(
+                        f"secciones+salidas_wr ok: seccion {s.id}.salida_wr no puede ser None"
+                    )
+                if s.salida_wr != by_id[s.id]:
+                    raise ValueError(
+                        f"seccion {s.id}.salida_wr ({s.salida_wr}) no coincide con "
+                        f"cercha_salidas[{s.id}].activa ({by_id[s.id]})"
+                    )
 
         return self
 ```
@@ -669,6 +699,8 @@ No se usa `server_default='0'` en ninguna columna nueva: falsearía la lectura h
 
 **`reset_temporizado_state`** — columnas:
 - ciclo_id (FK)
+- w1_raw (INTEGER NULL) — palabra cruda W1 (auditoría)
+- dm_raw_words (TEXT JSON NULL) — `[D102, D103, D104, D105, D106, D107]` (auditoría; **D107 queda accesible vía `dm_raw_words[5]`** aunque sin campo semántico)
 - horario_global_activo (BOOLEAN)
 - reset_activo (BOOLEAN)
 - retardo_segundo_apagado_s, temporizador_segundo_apagado_s, contador_apagados (INTEGER)
@@ -694,57 +726,16 @@ No se usa `server_default='0'` en ninguna columna nueva: falsearía la lectura h
 
 Se elige JSON column para `cercha_salidas` en vez de tabla detalle por cercha. 160 filas por ciclo × N ciclos/día explotaría storage sin valor analítico equivalente; el JSON mantiene los 160 estados consultables por ciclo y permite añadir tabla detalle más adelante si surge necesidad de queries por cercha individual.
 
-### 5.4 Migración Alembic (`alembic/versions/20260524_0003_v2_semantic_layer.py`)
+### 5.4 Esquema V2 limpio
 
-Batch mode obligatorio para SQLite (no soporta ALTER COLUMN directo). **Sin backfill** de columnas v2 (ver §5.2).
+No hay ruta de upgrade/backfill dentro del repo. V2 se despliega con una base limpia
+creada desde los modelos SQLAlchemy (`Base.metadata.create_all`) o con un esquema
+equivalente preparado fuera del runtime. La BD V1 se conserva como backup/referencia,
+pero no se transforma: los campos legacy no son equivalentes semánticos fiables.
 
-```python
-def upgrade():
-    with op.batch_alter_table('seccion_estado') as batch:
-        batch.alter_column('automatico',     new_column_name='automatico_calculado')
-        batch.alter_column('manual',         new_column_name='manual_activo')
-        batch.alter_column('horario_activo', new_column_name='salida_interna')
-        batch.add_column(sa.Column('salida_wr', sa.Boolean(), nullable=True))
-
-    with op.batch_alter_table('horario_tramo') as batch:
-        # NO se tocan inicio_raw / fin_raw (INTEGER legacy v1).
-        # Nuevas columnas v2, todas nullable, sin server_default:
-        batch.add_column(sa.Column('inicio_raw_words', sa.Text(),    nullable=True))  # JSON
-        batch.add_column(sa.Column('fin_raw_words',    sa.Text(),    nullable=True))  # JSON
-        batch.add_column(sa.Column('source_json',      sa.Text(),    nullable=True))  # JSON
-        batch.add_column(sa.Column('inicio_hora',      sa.Integer(), nullable=True))
-        batch.add_column(sa.Column('inicio_minuto',    sa.Integer(), nullable=True))
-        batch.add_column(sa.Column('fin_hora',         sa.Integer(), nullable=True))
-        batch.add_column(sa.Column('fin_minuto',       sa.Integer(), nullable=True))
-
-    # Tablas nuevas (1:1 con ciclo)
-    op.create_table('fotocelula_state',        ...)
-    op.create_table('reset_temporizado_state', ...)
-    op.create_table('hmi_original_state',      ...)
-    op.create_table('reloj_ar_state',          ...)
-    op.create_table('salidas_wr_state',        ...)
-
-
-def downgrade():
-    op.drop_table('salidas_wr_state')
-    op.drop_table('reloj_ar_state')
-    op.drop_table('hmi_original_state')
-    op.drop_table('reset_temporizado_state')
-    op.drop_table('fotocelula_state')
-
-    with op.batch_alter_table('horario_tramo') as batch:
-        for col in ('fin_minuto', 'fin_hora', 'inicio_minuto', 'inicio_hora',
-                    'source_json', 'fin_raw_words', 'inicio_raw_words'):
-            batch.drop_column(col)
-
-    with op.batch_alter_table('seccion_estado') as batch:
-        batch.drop_column('salida_wr')
-        batch.alter_column('salida_interna',       new_column_name='horario_activo')
-        batch.alter_column('manual_activo',        new_column_name='manual')
-        batch.alter_column('automatico_calculado', new_column_name='automatico')
-```
-
-La migración es puramente estructural. La validación funcional ocurre en el primer ciclo v2 que escriba el subscriber, donde Pydantic rechazaría cualquier inconsistencia antes de tocar la base de datos.
+La validación funcional ocurre antes de tocar la base de datos: el subscriber valida
+cada payload con Pydantic y rechaza inconsistencias de bloque, índices, relojes,
+rangos y mirrors WR.
 
 ---
 
@@ -795,13 +786,41 @@ En esta iteración:
   - **NO escribir** las columnas legacy `inicio_raw` / `fin_raw` (quedan NULL en filas v2)
   - Escribir las columnas v2: `inicio_raw_words` y `fin_raw_words` como JSON (`json.dumps([...])`), `source_json` igual, y los 4 enteros `inicio_hora`/`inicio_minuto`/`fin_hora`/`fin_minuto` (con NULL en `inicio_*` para tramos 3-12)
   - Eliminar el comentario PENDIENTE P1
-- Añadir inserts a las 5 tablas nuevas: `fotocelula_state`, `reset_temporizado_state`, `hmi_original_state`, `reloj_ar_state`, `salidas_wr_state` (con `cercha_salidas` y `raw_words` serializados a JSON)
+- Añadir inserts a las 5 tablas nuevas: `fotocelula_state`, `reset_temporizado_state`, `hmi_original_state`, `reloj_ar_state`, `salidas_wr_state` (con campos JSON serializados con `json.dumps(...)`):
+  - `reset_temporizado_state`: persistir `w1_raw` y `json.dumps(payload.reset_temporizado.dm_raw_words)` (mantiene auditable el D107 sin mapeo)
+  - `salidas_wr_state`: `json.dumps(payload.salidas_wr.raw_words)` y `json.dumps([c.model_dump() for c in payload.salidas_wr.cercha_salidas])`
+  - `reloj_ar_state`: campos planos (raw + decoded) desde el payload
 
 ---
 
-## 9. API `schemas/lectura.py`
+## 9. API + Frontend — `schemas/lectura.py`, `api/routes.py`, `web/static/app.js`
 
-Actualizar response models para reflejar campos v2. Los renombrados de `seccion_estado` se propagan automáticamente si Pydantic usa `from_attributes=True` contra el modelo SQLAlchemy actualizado. Para las nuevas tablas, definir response models nuevos que la API pueda exponer en endpoints por ciclo (`/ciclos/{id}/fotocelula`, `/ciclos/{id}/salidas_wr`, etc., scope a definir en el plan de implementación).
+### 9.1 Response models (`schemas/lectura.py`)
+
+Actualizar response models para reflejar campos v2. Los renombrados de `seccion_estado` se propagan automáticamente si Pydantic usa `from_attributes=True` contra el modelo SQLAlchemy actualizado. Para las nuevas tablas (fotocelula, reset_temporizado, hmi_original, reloj_ar, salidas_wr), definir response models nuevos.
+
+### 9.2 Endpoints (`api/routes.py`)
+
+- Reemplazar agregaciones por nombres v2: `automatico → automatico_calculado`, `manual → manual_activo`, `horario_activo → salida_interna`. La clave de respuesta JSON también pasa a los nuevos nombres (las consumidoras frontend se actualizan en §9.3).
+- Añadir conteo `salida_wr` (cuántas secciones con salida WR activa en el último ciclo).
+- Endpoints nuevos sugeridos (scope para el plan de implementación):
+  - `GET /ciclos/{id}/salidas_wr` → JSON con `raw_words` y los 160 `cercha_salidas`
+  - `GET /ciclos/{id}/reset_temporizado`, `/fotocelula`, `/hmi_original`, `/reloj_ar`
+
+### 9.3 Frontend (`web/static/app.js`)
+
+Sustituir las referencias actuales por los nombres v2. Tras grep en `web/static/app.js`:
+
+| Referencia actual | Cambio v2 |
+|---|---|
+| `fieldValue(item, ["automatico", "auto"])` | `fieldValue(item, ["automatico_calculado", "auto"])` |
+| `fieldValue(item, ["manual"])` | `fieldValue(item, ["manual_activo"])` |
+| `fieldValue(item, ["horario_activo", "horario"])` | `fieldValue(item, ["salida_interna"])` |
+| `ciclo.fotocelula_mem_fun` | `ciclo.fotocelula.mem_fun` (ahora bloque anidado) |
+| `ciclo.fotocelula_mem_act` | `ciclo.fotocelula.filtrada_activa` |
+| label `"Auto, manual u horario"` | `"Auto calc., manual o salida interna"` |
+| (nuevo) | mostrar `salida_wr` por sección en la vista detalle |
+| (nuevo) | exponer `modo.modo_label` legible (`horarios`/`fotocelula`/`ambos`) en la vista Estado |
 
 ---
 
@@ -860,14 +879,19 @@ Coverage de los validadores semánticos nuevos:
 
 ## 11. Despliegue
 
-1. Detener publisher RPi
-2. Detener subscriber/API Lenovo
-3. Backup SQLite: `cp alumbrado.db alumbrado.db.bak.$(date +%Y%m%d-%H%M%S)`
-4. Actualizar código en ambos nodos (git pull)
-5. Ejecutar migración Alembic: `alembic upgrade head` (puramente estructural; sin backfill)
-6. Arrancar subscriber/API Lenovo (verificar que arranca sin errores Pydantic)
-7. Arrancar publisher RPi
-8. Verificación primer ciclo: `read_status` con los 10 bloques v2 en `status='ok'`, modo_label coherente con D116, `cercha_salidas[0].source == 'W4.00'`
+Clean break operativo con BD nueva V2. La BD V1 se conserva como backup/referencia; no hay backfill porque los campos de horarios y semantica v1 no son equivalentes a v2.
+
+Cadencia objetivo V2: `ACQUISITION_INTERVAL_S=2` y `HEARTBEAT_INTERVAL_S=30`. Esto lee PLC cada 2s y publica por MQTT cuando cambia el payload operacional o, sin cambios, cada 30s.
+
+1. Detener subscriber/API Lenovo.
+2. Backup SQLite V1 y conservar la ruta anterior como referencia.
+3. Configurar `DB_ESTADOS_URL` en Lenovo hacia un fichero SQLite V2 nuevo.
+4. Crear el esquema V2 limpio desde los modelos SQLAlchemy o usar una BD V2 ya preparada.
+5. Arrancar subscriber/API Lenovo y verificar que quedan esperando payload v2 sin errores.
+6. Detener publisher RPi.
+7. Actualizar codigo/config RPi con `ACQUISITION_INTERVAL_S=2`, `HEARTBEAT_INTERVAL_S=30` y el mismo `MQTT_TOPIC`.
+8. Arrancar publisher RPi.
+9. Verificacion primer ciclo: `schema_version=2`, `read_status` con los 10 bloques v2, `modo_label` coherente con D116, `cercha_salidas[0].source == 'W4.00'`, primera fila en BD V2 y dashboard con secciones/WR visibles.
 
 ---
 

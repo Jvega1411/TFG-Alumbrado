@@ -13,6 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 WEB_DIR = PROJECT_ROOT / "web"
 STATIC_DIR = WEB_DIR / "static"
 
+Config.validate_api()
 _engine = create_db_engine(Config.DB_ESTADOS_URL)
 if Config.DB_AUTO_CREATE:
     Base.metadata.create_all(_engine)

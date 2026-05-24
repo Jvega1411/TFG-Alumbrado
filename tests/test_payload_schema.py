@@ -3,259 +3,113 @@ import json
 import pytest
 
 from subscriber.payload_schema import parse_payload
+from tests.v2_helpers import sample_payload_bytes, sample_payload_dict
 
 
-def _valid_bytes(fins_ok: bool = True) -> bytes:
-    secciones = [
-        {"id": i + 1, "automatico": False, "manual": False, "horario_activo": False}
-        for i in range(112)
-    ]
-    if fins_ok:
-        data = {
-            "ts": "2026-05-12T08:30:00+00:00",
-            "fins_ok": True,
-            "fins_error": None,
-            "plc_reloj": {"seg": 0, "min": 30, "hora": 8, "dia": 12, "mes": 5, "anio": 2026, "diasem": 2},
-            "modo": {
-                "modfunalu": 0,
-                "fotocelula_entrada": False,
-                "fotocelula_mem_fun": False,
-                "fotocelula_mem_act": False,
-            },
-            "secciones": secciones,
-            "horarios": {"raw_words": [0] * 28},
-            "diagnostico": {"cycle_time_error": False, "low_battery": False, "io_verify_error": False},
-        }
-    else:
-        data = {"ts": "2026-05-12T08:30:00+00:00", "fins_ok": False, "fins_error": "timeout"}
-    return json.dumps(data).encode("utf-8")
+def test_accepts_valid_v2_payload():
+    payload = parse_payload(sample_payload_bytes())
+    assert payload.schema_version == 2
+    assert payload.fins_ok is True
+    assert payload.block_ok("salidas_wr") is True
+    assert len(payload.secciones) == 112
+    assert len(payload.salidas_wr.cercha_salidas) == 160
 
 
-class TestParsePayload:
-    def test_valid_fins_ok_payload_parses(self):
-        payload = parse_payload(_valid_bytes(fins_ok=True))
-        assert payload.fins_ok is True
-        assert len(payload.secciones) == 112
-
-    def test_valid_fins_error_payload_parses(self):
-        payload = parse_payload(_valid_bytes(fins_ok=False))
-        assert payload.fins_ok is False
-        assert payload.fins_error == "timeout"
-        assert payload.secciones == []
-
-    def test_partial_payload_with_secciones_ok_parses(self):
-        secciones = [
-            {"id": i + 1, "automatico": False, "manual": False, "horario_activo": False}
-            for i in range(112)
-        ]
-        data = {
-            "schema_version": 1,
-            "ts": "2026-05-12T08:30:00+00:00",
-            "fins_ok": False,
-            "fins_error": "diagnostico: timeout",
-            "read_status": {
-                "secciones": {"status": "ok", "error": None},
-                "modo": {"status": "failed", "error": "skipped"},
-                "fotocelula": {"status": "failed", "error": "skipped"},
-                "reloj": {"status": "failed", "error": "skipped"},
-                "horarios": {"status": "failed", "error": "skipped"},
-                "diagnostico": {"status": "failed", "error": "timeout"},
-            },
-            "secciones": secciones,
-            "diagnostico": None,
-        }
-        payload = parse_payload(json.dumps(data).encode("utf-8"))
-        assert payload.fins_ok is False
-        assert payload.block_ok("secciones") is True
-        assert len(payload.secciones) == 112
-
-    def test_missing_ts_raises(self):
-        data = json.dumps({"fins_ok": True}).encode("utf-8")
-        with pytest.raises(ValueError, match="ts"):
-            parse_payload(data)
-
-    def test_invalid_json_raises_valueerror(self):
-        with pytest.raises(ValueError, match="JSON"):
-            parse_payload(b"not valid json {{{")
-
-    def test_invalid_utf8_raises_valueerror(self):
-        with pytest.raises(ValueError, match="UTF"):
-            parse_payload(b"\xff\xfe invalid bytes")
-
-    def test_wrong_seccion_count_raises(self):
-        secciones = [
-            {"id": i + 1, "automatico": False, "manual": False, "horario_activo": False}
-            for i in range(111)
-        ]
-        data = _full_payload(secciones=secciones)
-        with pytest.raises(ValueError, match="112"):
-            parse_payload(json.dumps(data).encode("utf-8"))
-
-    def test_duplicate_seccion_id_raises(self):
-        secciones = [
-            {"id": 1, "automatico": False, "manual": False, "horario_activo": False}
-            for _ in range(112)
-        ]
-        data = _full_payload(secciones=secciones)
-        with pytest.raises(ValueError, match="duplicados"):
-            parse_payload(json.dumps(data).encode("utf-8"))
-
-    def test_extra_field_rejected(self):
-        data = _full_payload()
-        data["campo_extra_inesperado"] = "valor"
-        with pytest.raises(ValueError):
-            parse_payload(json.dumps(data).encode("utf-8"))
-
-    def test_string_coercion_rejected_for_bool(self):
-        data = _full_payload()
-        data["fins_ok"] = "true"
-        with pytest.raises(ValueError):
-            parse_payload(json.dumps(data).encode("utf-8"))
-
-    def test_reloj_ok_requires_plc_reloj(self):
-        data = _full_payload()
-        data["read_status"] = _read_status_with("reloj", "ok")
-        data["plc_reloj"] = None
-        with pytest.raises(ValueError, match="reloj"):
-            parse_payload(json.dumps(data).encode("utf-8"))
-
-    def test_modo_ok_requires_modfunalu(self):
-        data = _full_payload()
-        data["read_status"] = _read_status_with("modo", "ok")
-        data["modo"]["modfunalu"] = None
-        with pytest.raises(ValueError, match="modo"):
-            parse_payload(json.dumps(data).encode("utf-8"))
-
-    def test_fotocelula_ok_requires_fotocelula_fields(self):
-        data = _full_payload()
-        data["read_status"] = _read_status_with("fotocelula", "ok")
-        data["modo"]["fotocelula_entrada"] = None
-        with pytest.raises(ValueError, match="fotocelula"):
-            parse_payload(json.dumps(data).encode("utf-8"))
-
-    def test_diagnostico_ok_requires_diagnostico(self):
-        data = _full_payload()
-        data["read_status"] = _read_status_with("diagnostico", "ok")
-        data["diagnostico"] = None
-        with pytest.raises(ValueError, match="diagnostico"):
-            parse_payload(json.dumps(data).encode("utf-8"))
-
-    def test_horarios_ok_requires_24_raw_words(self):
-        data = _full_payload()
-        data["read_status"] = _read_status_with("horarios", "ok")
-        data["horarios"] = {"raw_words": [0] * 23}
-        with pytest.raises(ValueError, match="24"):
-            parse_payload(json.dumps(data).encode("utf-8"))
-
-    def test_read_status_requires_exact_blocks(self):
-        data = _full_payload()
-        data["read_status"] = _read_status_with("secciones", "ok")
-        del data["read_status"]["diagnostico"]
-        with pytest.raises(ValueError, match="exactamente"):
-            parse_payload(json.dumps(data).encode("utf-8"))
-
-    def test_fins_ok_must_match_read_status(self):
-        data = _full_payload()
-        data["schema_version"] = 1
-        data["fins_ok"] = False
-        data["read_status"] = _read_status_with("secciones", "ok")
-        with pytest.raises(ValueError, match="fins_ok"):
-            parse_payload(json.dumps(data).encode("utf-8"))
-
-    def test_failed_secciones_rejects_present_rows(self):
-        data = _full_payload()
-        data["schema_version"] = 1
-        data["fins_ok"] = False
-        data["read_status"] = _read_status_with("secciones", "failed")
-        data["secciones"] = [
-            {"id": i + 1, "automatico": False, "manual": False, "horario_activo": False}
-            for i in range(112)
-        ]
-        with pytest.raises(ValueError, match="secciones"):
-            parse_payload(json.dumps(data).encode("utf-8"))
-
-    def test_failed_reloj_rejects_present_plc_reloj(self):
-        data = _full_payload()
-        data["schema_version"] = 1
-        data["fins_ok"] = False
-        data["read_status"] = _read_status_with("reloj", "failed")
-        with pytest.raises(ValueError, match="reloj"):
-            parse_payload(json.dumps(data).encode("utf-8"))
-
-    def test_failed_horarios_rejects_empty_horarios_object(self):
-        data = _full_payload()
-        data["schema_version"] = 1
-        data["fins_ok"] = False
-        data["read_status"] = _read_status_with("horarios", "failed")
-        data["horarios"] = {"raw_words": []}
-        with pytest.raises(ValueError, match="horarios"):
-            parse_payload(json.dumps(data).encode("utf-8"))
-
-    def test_modo_can_keep_modfunalu_when_fotocelula_failed(self):
-        data = _full_payload()
-        data["fins_ok"] = False
-        data["read_status"] = _read_status_with("modo", "ok")
-        data["read_status"]["fotocelula"] = {"status": "failed", "error": "timeout"}
-        data["modo"]["fotocelula_entrada"] = None
-        data["modo"]["fotocelula_mem_fun"] = None
-        data["modo"]["fotocelula_mem_act"] = None
-        payload = parse_payload(json.dumps(data).encode("utf-8"))
-        assert payload.block_ok("modo") is True
-        assert payload.block_ok("fotocelula") is False
-
-    def test_fotocelula_can_keep_fields_when_modo_failed(self):
-        data = _full_payload()
-        data["fins_ok"] = False
-        data["read_status"] = _read_status_with("fotocelula", "ok")
-        data["read_status"]["modo"] = {"status": "failed", "error": "timeout"}
-        data["modo"]["modfunalu"] = None
-        payload = parse_payload(json.dumps(data).encode("utf-8"))
-        assert payload.block_ok("modo") is False
-        assert payload.block_ok("fotocelula") is True
-        assert payload.modo.fotocelula_entrada is False
-
-    def test_modo_failed_rejects_modfunalu(self):
-        data = _full_payload()
-        data["fins_ok"] = False
-        data["read_status"] = _read_status_with("fotocelula", "ok")
-        data["read_status"]["modo"] = {"status": "failed", "error": "timeout"}
-        with pytest.raises(ValueError, match="modo"):
-            parse_payload(json.dumps(data).encode("utf-8"))
-
-    def test_fotocelula_failed_rejects_fotocelula_fields(self):
-        data = _full_payload()
-        data["fins_ok"] = False
-        data["read_status"] = _read_status_with("modo", "ok")
-        data["read_status"]["fotocelula"] = {"status": "failed", "error": "timeout"}
-        with pytest.raises(ValueError, match="fotocelula"):
-            parse_payload(json.dumps(data).encode("utf-8"))
+def test_rejects_schema_v1_payload():
+    data = sample_payload_dict()
+    data["schema_version"] = 1
+    with pytest.raises(ValueError):
+        parse_payload(json.dumps(data).encode("utf-8"))
 
 
-def _full_payload(secciones=None):
-    if secciones is None:
-        secciones = [
-            {"id": i + 1, "automatico": False, "manual": False, "horario_activo": False}
-            for i in range(112)
-        ]
-    return {
-        "ts": "2026-05-12T08:30:00+00:00",
-        "fins_ok": True,
-        "fins_error": None,
-        "plc_reloj": {"seg": 0, "min": 0, "hora": 0, "dia": 1, "mes": 1, "anio": 2026, "diasem": 1},
-        "modo": {
-            "modfunalu": 0,
-            "fotocelula_entrada": False,
-            "fotocelula_mem_fun": False,
-            "fotocelula_mem_act": False,
-        },
-        "secciones": secciones,
-        "horarios": {"raw_words": [0] * 28},
-        "diagnostico": {"cycle_time_error": False, "low_battery": False, "io_verify_error": False},
-    }
+def test_rejects_missing_read_status_block():
+    data = sample_payload_dict()
+    del data["read_status"]["salidas_wr"]
+    with pytest.raises(ValueError, match="read_status"):
+        parse_payload(json.dumps(data).encode("utf-8"))
 
 
-def _read_status_with(ok_block: str, status: str) -> dict:
-    blocks = ["secciones", "modo", "fotocelula", "reloj", "horarios", "diagnostico"]
-    read_status = {block: {"status": "ok", "error": None} for block in blocks}
-    read_status[ok_block] = {"status": status, "error": None if status == "ok" else status}
-    return read_status
+def test_rejects_fins_ok_incoherent_with_block_failure():
+    data = sample_payload_dict({"reloj"})
+    data["fins_ok"] = True
+    data["fins_error"] = None
+    with pytest.raises(ValueError, match="fins_ok"):
+        parse_payload(json.dumps(data).encode("utf-8"))
+
+
+def test_rejects_failed_block_with_payload_data():
+    data = sample_payload_dict({"fotocelula"})
+    data["fotocelula"] = sample_payload_dict()["fotocelula"]
+    with pytest.raises(ValueError, match="fotocelula"):
+        parse_payload(json.dumps(data).encode("utf-8"))
+
+
+def test_rejects_sections_without_112_ids():
+    data = sample_payload_dict()
+    data["secciones"] = data["secciones"][:-1]
+    with pytest.raises(ValueError, match="1..112"):
+        parse_payload(json.dumps(data).encode("utf-8"))
+
+
+def test_rejects_salidas_wr_mirror_mismatch():
+    data = sample_payload_dict()
+    data["secciones"][0]["salida_wr"] = False
+    with pytest.raises(ValueError, match="salida_wr"):
+        parse_payload(json.dumps(data).encode("utf-8"))
+
+
+def test_allows_secciones_ok_when_salidas_wr_failed_with_none_mirror():
+    payload = parse_payload(sample_payload_bytes({"salidas_wr"}))
+    assert payload.block_ok("secciones") is True
+    assert payload.block_ok("salidas_wr") is False
+    assert all(section.salida_wr is None for section in payload.secciones)
+
+
+def test_rejects_bad_fixed_lengths():
+    data = sample_payload_dict()
+    data["salidas_wr"]["raw_words"].append(0)
+    with pytest.raises(ValueError):
+        parse_payload(json.dumps(data).encode("utf-8"))
+
+
+def test_rejects_naive_timestamp():
+    data = sample_payload_dict()
+    data["ts"] = "2026-05-12T08:30:00"
+    with pytest.raises(ValueError, match="timezone"):
+        parse_payload(json.dumps(data).encode("utf-8"))
+
+
+def test_rejects_hmi_index_out_of_range():
+    data = sample_payload_dict()
+    data["hmi_original"]["indice_seccion"] = 112
+    with pytest.raises(ValueError):
+        parse_payload(json.dumps(data).encode("utf-8"))
+
+
+def test_rejects_modo_label_mismatch():
+    data = sample_payload_dict()
+    data["modo"]["modfunalu"] = 2
+    data["modo"]["modo_label"] = "fotocelula"
+    with pytest.raises(ValueError, match="modo_label"):
+        parse_payload(json.dumps(data).encode("utf-8"))
+
+
+def test_rejects_clock_raw_decoded_mismatch():
+    data = sample_payload_dict()
+    data["plc_reloj"]["decoded"]["segundo"] = 59
+    with pytest.raises(ValueError, match="reloj"):
+        parse_payload(json.dumps(data).encode("utf-8"))
+
+
+def test_rejects_cercha_source_mismatch():
+    data = sample_payload_dict()
+    data["salidas_wr"]["cercha_salidas"][0]["source"] = "W4.01"
+    with pytest.raises(ValueError, match="source"):
+        parse_payload(json.dumps(data).encode("utf-8"))
+
+
+def test_rejects_invalid_utf8_and_json():
+    with pytest.raises(ValueError):
+        parse_payload(b"\xff\xfe")
+    with pytest.raises(ValueError):
+        parse_payload(b"not-json")

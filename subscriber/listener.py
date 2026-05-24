@@ -1,3 +1,4 @@
+import json
 import logging
 
 import paho.mqtt.client as mqtt
@@ -7,14 +8,24 @@ from sqlalchemy.orm import Session
 
 from config.settings import Config
 from model.database import Base, create_db_engine
-from model.fase2 import Ciclo, HorarioTramo, SeccionEstado
+from model.fase2 import (
+    Ciclo,
+    FotocelulaState,
+    HmiOriginalState,
+    HorarioTramo,
+    RelojArState,
+    ResetTemporizadoState,
+    SalidasWrState,
+    SeccionEstado,
+)
+from schemas.blocks import READ_BLOCKS_V2
 from subscriber.payload_schema import parse_payload
 
 logger = logging.getLogger(__name__)
 
 
 def process_message(payload_bytes: bytes, session: Session) -> None:
-    """Parse a MQTT payload and write it to DB without stopping the loop."""
+    """Parse a MQTT v2 payload and write it to DB without stopping the loop."""
     try:
         payload = parse_payload(payload_bytes)
     except (ValueError, ValidationError) as exc:
@@ -32,75 +43,185 @@ def process_message(payload_bytes: bytes, session: Session) -> None:
 
 
 def _write_to_db(payload, session: Session) -> None:
+    ciclo = _add_ciclo(payload, session)
+    _add_secciones(payload, session, ciclo)
+    _add_horarios(payload, session, ciclo)
+    _add_fotocelula(payload, session, ciclo)
+    _add_reset_temporizado(payload, session, ciclo)
+    _add_hmi_original(payload, session, ciclo)
+    _add_reloj_ar(payload, session, ciclo)
+    _add_salidas_wr(payload, session, ciclo)
+    session.commit()
+
+
+def _add_ciclo(payload, session: Session) -> Ciclo:
     ts = payload.ts
-    modo_ok = payload.block_ok("modo")
-    fotocelula_ok = payload.block_ok("fotocelula")
-    reloj_ok = payload.block_ok("reloj")
-    diagnostico_ok = payload.block_ok("diagnostico")
+    modo = payload.modo if payload.block_ok("modo") else None
+    fotocelula = payload.fotocelula if payload.block_ok("fotocelula") else None
+    reloj = payload.plc_reloj if payload.block_ok("reloj") else None
+    diagnostico = payload.diagnostico if payload.block_ok("diagnostico") else None
 
     ciclo = Ciclo(
         timestamp=ts,
         fins_ok=payload.fins_ok,
         fins_error=payload.fins_error,
-        secciones_status=payload.block_status("secciones"),
-        secciones_error=payload.block_error("secciones"),
-        modo_status=payload.block_status("modo"),
-        modo_error=payload.block_error("modo"),
-        fotocelula_status=payload.block_status("fotocelula"),
-        fotocelula_error=payload.block_error("fotocelula"),
-        reloj_status=payload.block_status("reloj"),
-        reloj_error=payload.block_error("reloj"),
-        horarios_status=payload.block_status("horarios"),
-        horarios_error=payload.block_error("horarios"),
-        diagnostico_status=payload.block_status("diagnostico"),
-        diagnostico_error=payload.block_error("diagnostico"),
-        modfunalu=payload.modo.modfunalu if modo_ok and payload.modo else None,
-        fotocelula_entrada=payload.modo.fotocelula_entrada if fotocelula_ok and payload.modo else None,
-        fotocelula_mem_fun=payload.modo.fotocelula_mem_fun if fotocelula_ok and payload.modo else None,
-        fotocelula_mem_act=payload.modo.fotocelula_mem_act if fotocelula_ok and payload.modo else None,
-        plc_seg=payload.plc_reloj.seg if reloj_ok and payload.plc_reloj else None,
-        plc_min=payload.plc_reloj.min if reloj_ok and payload.plc_reloj else None,
-        plc_hora=payload.plc_reloj.hora if reloj_ok and payload.plc_reloj else None,
-        plc_dia=payload.plc_reloj.dia if reloj_ok and payload.plc_reloj else None,
-        plc_mes=payload.plc_reloj.mes if reloj_ok and payload.plc_reloj else None,
-        plc_anio=payload.plc_reloj.anio if reloj_ok and payload.plc_reloj else None,
-        plc_diasem=payload.plc_reloj.diasem if reloj_ok and payload.plc_reloj else None,
-        cycle_time_error=payload.diagnostico.cycle_time_error if diagnostico_ok and payload.diagnostico else None,
-        low_battery=payload.diagnostico.low_battery if diagnostico_ok and payload.diagnostico else None,
-        io_verify_error=payload.diagnostico.io_verify_error if diagnostico_ok and payload.diagnostico else None,
+        **{
+            f"{block}_status": payload.block_status(block)
+            for block in READ_BLOCKS_V2
+        },
+        **{
+            f"{block}_error": payload.block_error(block)
+            for block in READ_BLOCKS_V2
+        },
+        modfunalu=modo.modfunalu if modo else None,
+        modo_label=modo.modo_label if modo else None,
+        fotocelula_entrada=fotocelula.entrada_raw if fotocelula else None,
+        fotocelula_mem_fun=fotocelula.mem_fun if fotocelula else None,
+        fotocelula_mem_act=fotocelula.filtrada_activa if fotocelula else None,
+        plc_reloj_raw_words=json.dumps(reloj.raw_words) if reloj else None,
+        plc_reloj_encoding=reloj.encoding if reloj else None,
+        plc_seg=reloj.decoded.segundo if reloj else None,
+        plc_min=reloj.decoded.minuto if reloj else None,
+        plc_hora=reloj.decoded.hora if reloj else None,
+        plc_dia=reloj.decoded.dia if reloj else None,
+        plc_mes=reloj.decoded.mes if reloj else None,
+        plc_anio=reloj.decoded.anio if reloj else None,
+        plc_diasem=reloj.decoded.dia_semana if reloj else None,
+        cycle_time_error=diagnostico.cycle_time_error if diagnostico else None,
+        low_battery=diagnostico.low_battery if diagnostico else None,
+        io_verify_error=diagnostico.io_verify_error if diagnostico else None,
     )
     session.add(ciclo)
     session.flush()
+    return ciclo
 
-    if payload.block_ok("secciones") and payload.secciones:
-        for s in payload.secciones:
+
+def _add_secciones(payload, session: Session, ciclo: Ciclo) -> None:
+    if payload.block_ok("secciones"):
+        for section in payload.secciones:
             session.add(
                 SeccionEstado(
                     ciclo_id=ciclo.id,
-                    timestamp=ts,
-                    seccion_id=s.id,
-                    automatico=s.automatico,
-                    manual=s.manual,
-                    horario_activo=s.horario_activo,
+                    timestamp=payload.ts,
+                    seccion_id=section.id,
+                    automatico_calculado=section.automatico_calculado,
+                    manual_activo=section.manual_activo,
+                    salida_interna=section.salida_interna,
+                    salida_wr=section.salida_wr,
                 )
             )
 
-    # PENDIENTE P1: formato real de raw_words pendiente de smoke test FINS.
-    # Provisional: 2 words por tramo, inicio=raw_words[i*2], fin=raw_words[i*2+1].
-    if payload.block_ok("horarios") and payload.horarios:
-        raw_words = payload.horarios.raw_words
-        for i in range(12):
+
+def _add_horarios(payload, session: Session, ciclo: Ciclo) -> None:
+    if payload.block_ok("horarios"):
+        for tramo in payload.horarios.tramos:
             session.add(
                 HorarioTramo(
                     ciclo_id=ciclo.id,
-                    timestamp=ts,
-                    tramo_id=i + 1,
-                    inicio_raw=raw_words[i * 2] if i * 2 < len(raw_words) else None,
-                    fin_raw=raw_words[i * 2 + 1] if i * 2 + 1 < len(raw_words) else None,
+                    timestamp=payload.ts,
+                    tramo_id=tramo.tramo,
+                    inicio_raw=None,
+                    fin_raw=None,
+                    inicio_raw_words=(
+                        json.dumps(tramo.inicio_raw)
+                        if tramo.inicio_raw is not None
+                        else None
+                    ),
+                    fin_raw_words=json.dumps(tramo.fin_raw),
+                    source_json=json.dumps(tramo.source),
+                    inicio_hora=tramo.inicio_hora,
+                    inicio_minuto=tramo.inicio_minuto,
+                    fin_hora=tramo.fin_hora,
+                    fin_minuto=tramo.fin_minuto,
                 )
             )
 
-    session.commit()
+
+def _add_fotocelula(payload, session: Session, ciclo: Ciclo) -> None:
+    fotocelula = payload.fotocelula if payload.block_ok("fotocelula") else None
+    if fotocelula:
+        session.add(
+            FotocelulaState(
+                ciclo_id=ciclo.id,
+                entrada_raw=fotocelula.entrada_raw,
+                mem_fun=fotocelula.mem_fun,
+                filtrada_activa=fotocelula.filtrada_activa,
+                temporizador_activacion_s=fotocelula.temporizador_activacion_s,
+                temporizador_desactivacion_s=fotocelula.temporizador_desactivacion_s,
+                retardo_activacion_s=fotocelula.retardo_activacion_s,
+                retardo_desactivacion_s=fotocelula.retardo_desactivacion_s,
+            )
+        )
+
+
+def _add_reset_temporizado(payload, session: Session, ciclo: Ciclo) -> None:
+    if payload.block_ok("reset_temporizado"):
+        reset = payload.reset_temporizado.reset
+        session.add(
+            ResetTemporizadoState(
+                ciclo_id=ciclo.id,
+                w1_raw=payload.reset_temporizado.w1_raw,
+                dm_raw_words=json.dumps(payload.reset_temporizado.dm_raw_words),
+                horario_global_activo=payload.reset_temporizado.horario_global_activo,
+                reset_activo=reset.activo,
+                retardo_segundo_apagado_s=reset.retardo_segundo_apagado_s,
+                temporizador_segundo_apagado_s=reset.temporizador_segundo_apagado_s,
+                contador_apagados=reset.contador_apagados,
+                max_reintentos=reset.max_reintentos,
+            )
+        )
+
+
+def _add_hmi_original(payload, session: Session, ciclo: Ciclo) -> None:
+    if payload.block_ok("hmi_original"):
+        hmi = payload.hmi_original
+        session.add(
+            HmiOriginalState(
+                ciclo_id=ciclo.id,
+                indice_seccion=hmi.indice_seccion,
+                indice_anterior=hmi.indice_anterior,
+                h10_raw=hmi.h10_raw,
+                automatico_seccion_seleccionada=hmi.automatico_seccion_seleccionada,
+                manual_seccion_seleccionada=hmi.manual_seccion_seleccionada,
+                orden_transferencia_comun=hmi.orden_transferencia_comun,
+                indicacion_activacion_alumbrado_seccion=hmi.indicacion_activacion_alumbrado_seccion,
+            )
+        )
+
+
+def _add_reloj_ar(payload, session: Session, ciclo: Ciclo) -> None:
+    if payload.block_ok("reloj_ar"):
+        raw = payload.reloj_ar.raw
+        decoded = payload.reloj_ar.decoded
+        session.add(
+            RelojArState(
+                ciclo_id=ciclo.id,
+                raw_a351=raw.A351_minsegplc,
+                raw_a352=raw.A352_diahorplc,
+                raw_a353=raw.A353_anomesplc,
+                ar_minuto=decoded.minuto,
+                ar_segundo=decoded.segundo,
+                ar_dia=decoded.dia,
+                ar_hora=decoded.hora,
+                ar_anio=decoded.anio,
+                ar_mes=decoded.mes,
+                encoding=payload.reloj_ar.encoding,
+            )
+        )
+
+
+def _add_salidas_wr(payload, session: Session, ciclo: Ciclo) -> None:
+    if payload.block_ok("salidas_wr"):
+        session.add(
+            SalidasWrState(
+                ciclo_id=ciclo.id,
+                raw_words=json.dumps(payload.salidas_wr.raw_words),
+                cercha_salidas=json.dumps(
+                    [row.model_dump() for row in payload.salidas_wr.cercha_salidas]
+                ),
+                physical_io_mapping_status=payload.salidas_wr.physical_io_mapping_status,
+            )
+        )
 
 
 def run_subscriber() -> None:

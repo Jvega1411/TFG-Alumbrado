@@ -20,9 +20,20 @@ const ICON_WARN = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none" s
 
 const SKELETON = `<div class="skeleton-panel"></div><div class="skeleton-panel"></div><div class="skeleton-panel"></div>`;
 
-const STALE_WARN_S = 7200;   // 2h → aviso amarillo
+const STALE_WARN_FALLBACK_S = 30;
 const STALE_CRIT_S = 86400;  // 24h → aviso rojo
 const REFRESH_INTERVALS = { estado: 3000, secciones: 5000 };
+
+function staleWarnSeconds(summary) {
+  const value = Number(summary?.frescura?.stale_after_seconds);
+  return Number.isFinite(value) && value > 0 ? value : STALE_WARN_FALLBACK_S;
+}
+
+function isStaleWarning(summary) {
+  const age = summary?.frescura?.age_seconds;
+  return summary?.frescura?.is_stale === true
+    || (age !== null && age !== undefined && age >= staleWarnSeconds(summary));
+}
 
 // --- STATE ----------------------------------------------------------------
 let activeView = "estado";
@@ -249,7 +260,7 @@ function anomalyItems(summary, seccionesResult, horariosResult) {
   const age = summary?.frescura?.age_seconds;
   if (age !== null && age !== undefined && age >= STALE_CRIT_S) {
     items.push(["Pipeline caido", `Sin datos desde hace ${formatAge(age)}. Revisar publisher en RPi.`]);
-  } else if (summary?.frescura?.is_stale) {
+  } else if (isStaleWarning(summary)) {
     items.push(["Dato antiguo", `Ultima lectura RPi hace ${formatAge(age)}. Pipeline posiblemente detenido.`]);
   }
   if (age !== null && age !== undefined && age < 0) {
@@ -276,7 +287,8 @@ function anomalyItems(summary, seccionesResult, horariosResult) {
 
 function finsState(summary) {
   if (!summary) return { label: "PENDIENTE", cls: "warn" };
-  const anyOk = ["secciones", "modo", "fotocelula", "reloj", "horarios", "diagnostico"]
+  const anyOk = ["secciones", "modo", "fotocelula", "reloj", "horarios", "diagnostico",
+    "reset_temporizado", "hmi_original", "reloj_ar", "salidas_wr"]
     .some((block) => blockOk(summary, block));
   if (summary.fins_ok === true) return { label: "OK", cls: "ok" };
   if (anyOk) return { label: "PARCIAL", cls: "warn" };
@@ -367,13 +379,15 @@ function normalizeSection(index, name, item) {
     return { index, name, state: String(explicitState), css: "state-active", ts: getTimestamp(item) };
   }
 
-  const auto = fieldValue(item, ["automatico", "auto"]);
-  const manual = fieldValue(item, ["manual"]);
-  const horario = fieldValue(item, ["horario_activo", "horario"]);
+  const auto = fieldValue(item, ["automatico_calculado"]);
+  const manual = fieldValue(item, ["manual_activo"]);
+  const horario = fieldValue(item, ["salida_interna"]);
+  const salidaWr = fieldValue(item, ["salida_wr"]);
   const flags = [];
-  if (auto === true) flags.push("Auto");
+  if (auto === true) flags.push("Auto calc.");
   if (manual === true) flags.push("Manual");
-  if (horario === true) flags.push("Horario");
+  if (horario === true) flags.push("Salida interna");
+  if (salidaWr === true) flags.push("WR");
 
   return {
     index,
@@ -444,18 +458,19 @@ async function showResumen() {
 
   const summary = summaryResult.data;
   const counters = summary.secciones;
-  const activeCount = Math.max(0, counters.con_dato - counters.apagadas);
+  const activeCount = counters.activas ?? Math.max(0, counters.con_dato - counters.apagadas);
   const sectionRows = seccionesResult.ok ? normalizeSections(seccionesResult.data) : [];
   const counts = sectionCounts(sectionRows);
   const fins = finsState(summary);
   const age = summary.frescura.age_seconds;
+  const staleWarn = staleWarnSeconds(summary);
   const freshnessHint = age < 0 ? "Timestamp RPi en futuro"
     : age >= STALE_CRIT_S ? "Sin datos en mas de 24h"
-    : summary.frescura.is_stale ? "Dato antiguo (mas de 2h)"
+    : isStaleWarning(summary) ? `Dato antiguo (mas de ${formatAge(staleWarn)})`
     : "Dentro del umbral";
   const freshnessHtml = age !== null && age !== undefined && age < 0 ? badge("TS FUTURO", "bad")
     : age >= STALE_CRIT_S ? badge(`CAIDO ${formatAge(age)}`, "bad")
-    : summary.frescura?.is_stale ? badge(`ANTIGUO ${formatAge(age)}`, "warn")
+    : isStaleWarning(summary) ? badge(`ANTIGUO ${formatAge(age)}`, "warn")
     : badge(formatAge(age), "ok");
   const anomalies = anomalyItems(summary, seccionesResult, horariosResult);
   const isCritical = age !== null && age !== undefined && (age < 0 || age >= STALE_CRIT_S);
@@ -494,6 +509,8 @@ async function showResumen() {
           ["Reloj PLC", blockBadge(summary, "reloj")],
           ["Horarios", blockBadge(summary, "horarios")],
           ["Diagnostico", blockBadge(summary, "diagnostico")],
+          ["HMI", blockBadge(summary, "hmi_original")],
+          ["Salidas WR", blockBadge(summary, "salidas_wr")],
         ])}
       </div>
     `) +
@@ -507,7 +524,7 @@ async function showResumen() {
       : `<div class="empty success">No hay anomalias operativas en la ultima lectura.</div>`) +
     renderPanel("Secciones", `
       <div class="section-summary">
-        ${metric("Activas", escapeHtml(String(counts.active)), "Auto, manual u horario")}
+        ${metric("Activas", escapeHtml(String(counts.active)), "Auto calc., manual, interna o WR")}
         ${metric("Apagadas", escapeHtml(String(counts.off)), "Fila valida con flags falsos")}
         ${metric("Fallos", escapeHtml(String(counts.bad)), "Lectura invalida FINS")}
         ${metric("Sin datos", escapeHtml(String(counts.unknown)), "Ausente o no disponible")}

@@ -90,9 +90,9 @@ class TestSeccionEstado:
                     ciclo_id=ciclo.id,
                     timestamp=_ts(),
                     seccion_id=1,
-                    automatico=True,
-                    manual=False,
-                    horario_activo=False,
+                    automatico_calculado=True,
+                    manual_activo=False,
+                    salida_interna=False,
                 )
             )
             s.commit()
@@ -105,9 +105,9 @@ class TestSeccionEstado:
                     ciclo_id=9999,
                     timestamp=_ts(),
                     seccion_id=1,
-                    automatico=False,
-                    manual=False,
-                    horario_activo=False,
+                    automatico_calculado=False,
+                    manual_activo=False,
+                    salida_interna=False,
                 )
             )
             with pytest.raises(sqlalchemy.exc.IntegrityError):

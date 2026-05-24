@@ -51,7 +51,7 @@ class TestConfigValidation:
 
     def test_db_and_acquisition_defaults(self):
         assert Config.DB_PORT == 1433
-        assert Config.ACQUISITION_INTERVAL_S == 10.0
+        assert Config.ACQUISITION_INTERVAL_S == 2.0
         assert Config.ACQUISITION_INTERVAL_S > 0
 
     def test_db_estados_url_default_is_sqlite(self):
@@ -85,10 +85,15 @@ class TestMqttDefaults:
         assert Config.MQTT_PASSWORD == ''
 
     def test_heartbeat_interval_default(self):
-        assert Config.HEARTBEAT_INTERVAL_S == 300.0
+        assert Config.HEARTBEAT_INTERVAL_S == 30.0
 
-    def test_acquisition_interval_default_is_10(self):
-        assert Config.ACQUISITION_INTERVAL_S == 10.0
+    def test_acquisition_interval_default_is_2(self):
+        assert Config.ACQUISITION_INTERVAL_S == 2.0
+
+    def test_validate_rejects_acquisition_interval_below_2(self):
+        with patch.object(Config, 'ACQUISITION_INTERVAL_S', 1.9):
+            with pytest.raises(ValueError, match='2.0s'):
+                Config.validate()
 
     @pytest.mark.skipif(bool(os.getenv('API_HOST')), reason="env overrides default")
     def test_api_host_default_is_localhost(self):

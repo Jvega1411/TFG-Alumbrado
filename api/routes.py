@@ -1,14 +1,30 @@
+import json
 from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from model.fase2 import Ciclo, HorarioTramo, SeccionEstado
+from model.fase2 import (
+    Ciclo,
+    FotocelulaState,
+    HmiOriginalState,
+    HorarioTramo,
+    RelojArState,
+    ResetTemporizadoState,
+    SalidasWrState,
+    SeccionEstado,
+)
+from schemas.blocks import READ_BLOCKS
 from schemas.lectura import (
     CicloResponse,
     DashboardResumenResponse,
+    FotocelulaResponse,
+    HmiOriginalResponse,
     HorarioTramoResponse,
+    RelojArResponse,
+    ResetTemporizadoResponse,
+    SalidasWrResponse,
     SeccionEstadoResponse,
     SeccionHistorialResponse,
 )
@@ -17,9 +33,8 @@ _engine = None
 
 router = APIRouter()
 
-READ_BLOCKS = ("secciones", "modo", "fotocelula", "reloj", "horarios", "diagnostico")
 SECTION_COUNT = 112
-STALE_AFTER_SECONDS = 7200  # 2h → warn; ver STALE_CRIT_SECONDS en frontend para el rojo
+STALE_AFTER_SECONDS = 30
 
 
 def init_engine(engine) -> None:
@@ -85,22 +100,42 @@ def _plc_reloj(ciclo: Ciclo) -> Optional[dict]:
 
 def _section_counters(rows: List[SeccionEstado]) -> dict:
     con_dato = len(rows)
-    automatico = sum(1 for row in rows if row.automatico)
-    manual = sum(1 for row in rows if row.manual)
-    horario_activo = sum(1 for row in rows if row.horario_activo)
+    automatico = sum(1 for row in rows if row.automatico_calculado)
+    manual = sum(1 for row in rows if row.manual_activo)
+    interna = sum(1 for row in rows if row.salida_interna)
+    wr = sum(1 for row in rows if row.salida_wr is True)
+    wr_sin_dato = sum(1 for row in rows if row.salida_wr is None)
+    activas = sum(
+        1
+        for row in rows
+        if row.automatico_calculado or row.manual_activo or row.salida_interna or row.salida_wr is True
+    )
     apagadas = sum(
         1
         for row in rows
-        if not row.automatico and not row.manual and not row.horario_activo
+        if not row.automatico_calculado
+        and not row.manual_activo
+        and not row.salida_interna
+        and row.salida_wr is not True
     )
     return {
         "total": SECTION_COUNT,
         "con_dato": con_dato,
-        "automatico": automatico,
-        "manual": manual,
-        "horario_activo": horario_activo,
+        "automatico_calculado": automatico,
+        "manual_activo": manual,
+        "salida_interna": interna,
+        "salida_wr": wr,
+        "salida_wr_sin_dato": wr_sin_dato,
+        "activas": activas,
         "apagadas": apagadas,
     }
+
+
+def _get_state(db: Session, model, ciclo_id: int):
+    row = db.query(model).filter(model.ciclo_id == ciclo_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Sin datos validos")
+    return row
 
 
 @router.get("/api/estado", response_model=CicloResponse)
@@ -137,7 +172,7 @@ def get_dashboard_resumen(db: Session = Depends(get_db)):
             "timestamp_rpi": ciclo.timestamp,
             "age_seconds": age,
             "stale_after_seconds": STALE_AFTER_SECONDS,
-            "is_stale": age is None or age < 0 or age > STALE_AFTER_SECONDS,
+            "is_stale": age is None or age < 0 or age >= STALE_AFTER_SECONDS,
         },
         "capabilities": {
             "mode": "readonly",
@@ -248,3 +283,34 @@ def get_historial_secciones(
     if ciclo_id is not None:
         return q.order_by(SeccionEstado.seccion_id).limit(limit).all()
     return q.order_by(SeccionEstado.timestamp.desc(), SeccionEstado.id.desc()).limit(limit).all()
+
+
+@router.get("/api/ciclos/{ciclo_id}/fotocelula", response_model=FotocelulaResponse)
+def get_ciclo_fotocelula(ciclo_id: int, db: Session = Depends(get_db)):
+    return _get_state(db, FotocelulaState, ciclo_id)
+
+
+@router.get("/api/ciclos/{ciclo_id}/reset_temporizado", response_model=ResetTemporizadoResponse)
+def get_ciclo_reset_temporizado(ciclo_id: int, db: Session = Depends(get_db)):
+    return _get_state(db, ResetTemporizadoState, ciclo_id)
+
+
+@router.get("/api/ciclos/{ciclo_id}/hmi_original", response_model=HmiOriginalResponse)
+def get_ciclo_hmi_original(ciclo_id: int, db: Session = Depends(get_db)):
+    return _get_state(db, HmiOriginalState, ciclo_id)
+
+
+@router.get("/api/ciclos/{ciclo_id}/reloj_ar", response_model=RelojArResponse)
+def get_ciclo_reloj_ar(ciclo_id: int, db: Session = Depends(get_db)):
+    return _get_state(db, RelojArState, ciclo_id)
+
+
+@router.get("/api/ciclos/{ciclo_id}/salidas_wr", response_model=SalidasWrResponse)
+def get_ciclo_salidas_wr(ciclo_id: int, db: Session = Depends(get_db)):
+    row = _get_state(db, SalidasWrState, ciclo_id)
+    return {
+        "ciclo_id": row.ciclo_id,
+        "raw_words": json.loads(row.raw_words),
+        "cercha_salidas": json.loads(row.cercha_salidas),
+        "physical_io_mapping_status": row.physical_io_mapping_status,
+    }

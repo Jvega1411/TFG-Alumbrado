@@ -20,13 +20,21 @@ Base.metadata.create_all(engine)
 NOW = datetime.now(timezone.utc)
 random.seed(42)
 
-# Patron realista: 80 secciones encendidas (auto+horario), 28 apagadas, 4 fallo
+# Patron realista: 80 secciones encendidas y 32 apagadas.
 def section_state(i):
-    if i in (7, 23, 58, 91):          # 4 fallos de lectura — fallo FINS
-        return dict(automatico=False, manual=False, horario_activo=False)
-    if i <= 80:                        # 80 encendidas
-        return dict(automatico=True, manual=False, horario_activo=True)
-    return dict(automatico=False, manual=False, horario_activo=False)  # 28 apagadas
+    if i <= 80:
+        return dict(
+            automatico_calculado=True,
+            manual_activo=False,
+            salida_interna=True,
+            salida_wr=True,
+        )
+    return dict(
+        automatico_calculado=False,
+        manual_activo=False,
+        salida_interna=False,
+        salida_wr=False,
+    )
 
 with Session(engine) as s:
     s.query(HorarioTramo).delete()
@@ -47,7 +55,12 @@ with Session(engine) as s:
             reloj_status="ok",
             horarios_status="ok",
             diagnostico_status="ok",
+            reset_temporizado_status="ok",
+            hmi_original_status="ok",
+            reloj_ar_status="ok",
+            salidas_wr_status="ok",
             modfunalu=1,
+            modo_label="fotocelula",
             fotocelula_entrada=True,
             fotocelula_mem_fun=True,
             fotocelula_mem_act=True,
