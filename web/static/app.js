@@ -31,8 +31,7 @@ function staleWarnSeconds(summary) {
 
 function isStaleWarning(summary) {
   const age = summary?.frescura?.age_seconds;
-  return summary?.frescura?.is_stale === true
-    || (age !== null && age !== undefined && age >= staleWarnSeconds(summary));
+  return age !== null && age !== undefined && age >= staleWarnSeconds(summary);
 }
 
 // --- STATE ----------------------------------------------------------------
