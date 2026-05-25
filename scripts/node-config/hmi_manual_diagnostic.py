@@ -50,9 +50,7 @@ FINS_CHUNK_WORDS = 900
 WIDE_TRACE_RANGES: tuple[tuple[str, str, int, int], ...] = (
     ("HR", "H", 0, 43),
     ("HR", "H", 100, 1),
-    ("WR", "W", 0, 14),
-    ("WR", "W", 25, 1),
-    ("WR", "W", 400, 4),
+    ("WR", "W", 0, 501),
     ("DM", "D", 100, 17),
     ("DM", "D", 1000, 2652),
     ("DM", "D", 20000, 1),
@@ -60,7 +58,7 @@ WIDE_TRACE_RANGES: tuple[tuple[str, str, int, int], ...] = (
     ("AR", "A", 401, 2),
     ("AR", "A", 450, 24),
     ("AR", "A", 500, 1),
-    ("CIO", "CIO", 0, 16),
+    ("CIO", "CIO", 0, 501),
 )
 
 WIDE_VOLATILE_RANGES: tuple[tuple[str, str, int, int], ...] = (
@@ -630,6 +628,29 @@ def read_wide_snapshot(client, include_volatile: bool = False) -> dict[str, int]
     return snapshot
 
 
+def _changed_words(previous: dict[str, int], current: dict[str, int]) -> list[tuple[str, int, int]]:
+    changes = []
+    for address in sorted(current):
+        old = previous.get(address)
+        new = current[address]
+        if old is None or old == new:
+            continue
+        changes.append((address, old, new))
+    return changes
+
+
+def format_wide_status(current: dict[str, int], *, limit: int) -> str:
+    non_zero = [
+        f"{address}=0x{value & 0xFFFF:04X}"
+        for address, value in sorted(current.items())
+        if value
+    ]
+    return (
+        f"status: {len(current)} words leidos, {len(non_zero)} words no cero"
+        + (f"\nnon_zero: {', '.join(non_zero[:limit])}" if non_zero else "")
+    )
+
+
 def format_wide_diff(
     previous: dict[str, int] | None,
     current: dict[str, int],
@@ -637,23 +658,10 @@ def format_wide_diff(
     limit: int,
 ) -> str:
     if previous is None:
-        non_zero = [
-            f"{address}=0x{value & 0xFFFF:04X}"
-            for address, value in sorted(current.items())
-            if value
-        ]
-        return (
-            f"wide baseline: {len(current)} words leidos, "
-            f"{len(non_zero)} words no cero"
-            + (f"\nnon_zero: {', '.join(non_zero[:limit])}" if non_zero else "")
-        )
+        return "wide baseline\n" + format_wide_status(current, limit=limit)
 
     lines = []
-    for address in sorted(current):
-        old = previous.get(address)
-        new = current[address]
-        if old is None or old == new:
-            continue
+    for address, old, new in _changed_words(previous, current):
         lines.append(format_word_change(address, old, new))
         if len(lines) >= limit:
             lines.append(f"... cambios truncados a --limit {limit}")
@@ -685,6 +693,12 @@ def wide_plc(args: argparse.Namespace) -> int:
             try:
                 snapshot = read_wide_snapshot(client, include_volatile=args.include_volatile)
                 output = format_wide_diff(previous_snapshot, snapshot, limit=args.limit)
+                if (
+                    not output
+                    and args.status_every > 0
+                    and (sample + 1) % args.status_every == 0
+                ):
+                    output = format_wide_status(snapshot, limit=args.status_limit)
                 if output:
                     print(f"--- sample {sample + 1}/{args.samples} ---")
                     print(output)
@@ -842,6 +856,8 @@ def build_parser() -> argparse.ArgumentParser:
     wide_parser.add_argument("--interval-seconds", type=float, default=5.0)
     wide_parser.add_argument("--local-port", type=int)
     wide_parser.add_argument("--limit", type=int, default=80)
+    wide_parser.add_argument("--status-every", type=int, default=5)
+    wide_parser.add_argument("--status-limit", type=int, default=20)
     wide_parser.add_argument("--include-volatile", action="store_true")
     wide_parser.set_defaults(func=wide_plc)
 

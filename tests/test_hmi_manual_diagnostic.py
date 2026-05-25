@@ -142,6 +142,15 @@ def test_format_wide_diff_reports_only_changed_words():
     assert "D116" not in text
 
 
+def test_format_wide_status_reports_liveness_without_changes():
+    diagnostic = _load_hmi_manual_diagnostic()
+
+    text = diagnostic.format_wide_status({"W4": 0, "W5": 2}, limit=10)
+
+    assert "status: 2 words leidos, 1 words no cero" in text
+    assert "W5=0x0002" in text
+
+
 def test_parser_accepts_wide_plc_mode():
     diagnostic = _load_hmi_manual_diagnostic()
     args = diagnostic.build_parser().parse_args(
@@ -155,6 +164,8 @@ def test_parser_accepts_wide_plc_mode():
             "9600",
             "--limit",
             "20",
+            "--status-every",
+            "3",
         ]
     )
 
@@ -162,6 +173,7 @@ def test_parser_accepts_wide_plc_mode():
     assert args.interval_seconds == 5
     assert args.local_port == 9600
     assert args.limit == 20
+    assert args.status_every == 3
 
 
 def test_parser_accepts_full_diff_mode():
