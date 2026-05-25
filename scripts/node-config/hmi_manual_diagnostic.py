@@ -61,11 +61,24 @@ WIDE_TRACE_RANGES: tuple[tuple[str, str, int, int], ...] = (
     ("CIO", "CIO", 0, 501),
 )
 
+WIDE_EXHAUSTIVE_RANGES: tuple[tuple[str, str, int, int], ...] = (
+    ("HR", "H", 0, 512),
+    ("WR", "W", 0, 512),
+    ("CIO", "CIO", 0, 6144),
+    ("AR", "A", 0, 960),
+    ("DM", "D", 0, 32768),
+)
+
 WIDE_VOLATILE_RANGES: tuple[tuple[str, str, int, int], ...] = (
     ("DM", "D", 500, 21),
     ("AR", "A", 262, 3),
     ("AR", "A", 351, 3),
 )
+
+WIDE_PROFILES: dict[str, tuple[tuple[str, str, int, int], ...]] = {
+    "standard": WIDE_TRACE_RANGES,
+    "exhaustive": WIDE_EXHAUSTIVE_RANGES,
+}
 
 
 def _valid_section(value: str) -> int:
@@ -613,15 +626,23 @@ def _read_words_chunked(client, area: str, start: int, count: int) -> list[int]:
     return values
 
 
-def _wide_ranges(include_volatile: bool) -> tuple[tuple[str, str, int, int], ...]:
-    if include_volatile:
-        return WIDE_TRACE_RANGES + WIDE_VOLATILE_RANGES
-    return WIDE_TRACE_RANGES
+def _wide_ranges(
+    include_volatile: bool,
+    profile: str = "standard",
+) -> tuple[tuple[str, str, int, int], ...]:
+    ranges = WIDE_PROFILES[profile]
+    if include_volatile and profile == "standard":
+        return ranges + WIDE_VOLATILE_RANGES
+    return ranges
 
 
-def read_wide_snapshot(client, include_volatile: bool = False) -> dict[str, int]:
+def read_wide_snapshot(
+    client,
+    include_volatile: bool = False,
+    profile: str = "standard",
+) -> dict[str, int]:
     snapshot: dict[str, int] = {}
-    for area, prefix, start, count in _wide_ranges(include_volatile):
+    for area, prefix, start, count in _wide_ranges(include_volatile, profile):
         values = _read_words_chunked(client, area, start, count)
         for offset, value in enumerate(values):
             snapshot[f"{prefix}{start + offset}"] = value
@@ -677,21 +698,27 @@ def wide_plc(args: argparse.Namespace) -> int:
         raise SystemExit("--samples debe ser >= 1")
     if args.samples > 1 and args.interval_seconds < 2.0:
         raise SystemExit("--interval-seconds no puede bajar de 2.0 contra PLC real")
+    if args.profile == "exhaustive" and args.samples > 1 and args.interval_seconds < 5.0:
+        raise SystemExit("--profile exhaustive requiere --interval-seconds >= 5.0")
     if args.limit < 1:
         raise SystemExit("--limit debe ser >= 1")
 
     _validate_fins_config(args.local_port)
-    ranges = _wide_ranges(args.include_volatile)
+    ranges = _wide_ranges(args.include_volatile, args.profile)
     total_words = sum(count for _, _, _, count in ranges)
     print(
-        f"wide-plc read-only: {len(ranges)} rangos, {total_words} words por muestra, "
-        f"interval={args.interval_seconds}s"
+        f"wide-plc read-only: profile={args.profile} {len(ranges)} rangos, "
+        f"{total_words} words por muestra, interval={args.interval_seconds}s"
     )
     with FINSClient() as client:
         previous_snapshot = None
         for sample in range(args.samples):
             try:
-                snapshot = read_wide_snapshot(client, include_volatile=args.include_volatile)
+                snapshot = read_wide_snapshot(
+                    client,
+                    include_volatile=args.include_volatile,
+                    profile=args.profile,
+                )
                 output = format_wide_diff(previous_snapshot, snapshot, limit=args.limit)
                 if (
                     not output
@@ -859,6 +886,15 @@ def build_parser() -> argparse.ArgumentParser:
     wide_parser.add_argument("--status-every", type=int, default=5)
     wide_parser.add_argument("--status-limit", type=int, default=20)
     wide_parser.add_argument("--include-volatile", action="store_true")
+    wide_parser.add_argument(
+        "--profile",
+        choices=sorted(WIDE_PROFILES),
+        default="standard",
+        help=(
+            "standard lee rangos conocidos; exhaustive barre CIO/WR/HR/AR/DM completos "
+            "de forma pasiva"
+        ),
+    )
     wide_parser.set_defaults(func=wide_plc)
 
     db_parser = subparsers.add_parser("inspect-db")

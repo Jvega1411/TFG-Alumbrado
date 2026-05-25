@@ -174,6 +174,35 @@ def test_parser_accepts_wide_plc_mode():
     assert args.local_port == 9600
     assert args.limit == 20
     assert args.status_every == 3
+    assert args.profile == "standard"
+
+
+def test_parser_accepts_exhaustive_wide_plc_profile():
+    diagnostic = _load_hmi_manual_diagnostic()
+    args = diagnostic.build_parser().parse_args(
+        [
+            "wide-plc",
+            "--samples",
+            "2",
+            "--interval-seconds",
+            "5",
+            "--profile",
+            "exhaustive",
+        ]
+    )
+
+    assert args.profile == "exhaustive"
+
+
+def test_exhaustive_wide_plc_profile_expands_core_memory_areas():
+    diagnostic = _load_hmi_manual_diagnostic()
+
+    ranges = diagnostic._wide_ranges(include_volatile=False, profile="exhaustive")
+
+    assert ("DM", "D", 0, 32768) in ranges
+    assert ("CIO", "CIO", 0, 6144) in ranges
+    assert ("WR", "W", 0, 512) in ranges
+    assert ("HR", "H", 0, 512) in ranges
 
 
 def test_parser_accepts_full_diff_mode():
