@@ -238,6 +238,7 @@ def _validate_fins_config(local_port: int | None = None) -> None:
 
 def poll_plc(args: argparse.Namespace) -> int:
     from fins.client import FINSClient
+    from fins.frame import FINSError
 
     if args.samples < 1:
         raise SystemExit("--samples debe ser >= 1")
@@ -247,25 +248,38 @@ def poll_plc(args: argparse.Namespace) -> int:
     _validate_fins_config(args.local_port)
     with FINSClient() as client:
         for sample in range(args.samples):
-            h10_raw = words(client.read_h_range(HMI_H_WORD, 1))[0]
-            d1008, d1009 = words(client.read_dm_range(1008, 2))
-            h11_h31_raw = words(client.read_h_range(H_SECTION_START, H_SECTION_WORDS))
-            w4_w13_raw = words(client.read_w_range(W_SALIDA_START, W_SALIDA_WORDS))
-            snapshot = decode_plc_snapshot(
-                h10_raw=h10_raw,
-                d1008=d1008,
-                d1009=d1009,
-                h11_h31_raw=h11_h31_raw,
-                w4_w13_raw=w4_w13_raw,
-                timestamp_utc=datetime.now(timezone.utc),
-                selected_section=args.section,
-            )
-            if args.json:
-                print(json.dumps(snapshot, ensure_ascii=False, sort_keys=True))
-            else:
-                if args.samples > 1:
-                    print(f"--- sample {sample + 1}/{args.samples} ---")
-                print(format_plc_snapshot(snapshot, show_raw=args.raw))
+            try:
+                h10_raw = words(client.read_h_range(HMI_H_WORD, 1))[0]
+                d1008, d1009 = words(client.read_dm_range(1008, 2))
+                h11_h31_raw = words(client.read_h_range(H_SECTION_START, H_SECTION_WORDS))
+                w4_w13_raw = words(client.read_w_range(W_SALIDA_START, W_SALIDA_WORDS))
+                snapshot = decode_plc_snapshot(
+                    h10_raw=h10_raw,
+                    d1008=d1008,
+                    d1009=d1009,
+                    h11_h31_raw=h11_h31_raw,
+                    w4_w13_raw=w4_w13_raw,
+                    timestamp_utc=datetime.now(timezone.utc),
+                    selected_section=args.section,
+                )
+                if args.json:
+                    print(json.dumps(snapshot, ensure_ascii=False, sort_keys=True))
+                else:
+                    if args.samples > 1:
+                        print(f"--- sample {sample + 1}/{args.samples} ---")
+                    print(format_plc_snapshot(snapshot, show_raw=args.raw))
+            except (FINSError, OSError, RuntimeError, ValueError) as exc:
+                error = {
+                    "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                    "sample": sample + 1,
+                    "error": str(exc),
+                }
+                if args.json:
+                    print(json.dumps(error, ensure_ascii=False, sort_keys=True))
+                else:
+                    if args.samples > 1:
+                        print(f"--- sample {sample + 1}/{args.samples} ---")
+                    print(f"ERROR: {exc}")
             if sample < args.samples - 1:
                 time.sleep(args.interval_seconds)
     return 0

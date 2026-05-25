@@ -2,7 +2,10 @@ import socket
 from typing import Any, Dict, Optional
 
 from config.settings import Config
-from fins.frame import build_memory_read_frame, parse_fins_response
+from fins.frame import FINSProtocolError, build_memory_read_frame, parse_fins_response
+
+
+MAX_UNMATCHED_RESPONSES = 5
 
 
 class FINSClient:
@@ -49,14 +52,24 @@ class FINSClient:
             sid=sid,
         )
         self.socket.sendto(frame, (self.config.PLC_IP, self.config.PLC_PORT))
-        response, addr = self.socket.recvfrom(4096)
-        if addr[0] != self.config.PLC_IP:
-            raise ValueError(f"Respuesta de IP inesperada: {addr[0]}")
-        return parse_fins_response(
-            response,
-            expected_sid=sid,
-            expected_word_count=word_count,
-            raise_on_error=True,
+        unmatched_sids = []
+        for _ in range(MAX_UNMATCHED_RESPONSES + 1):
+            response, addr = self.socket.recvfrom(4096)
+            if addr[0] != self.config.PLC_IP:
+                raise ValueError(f"Respuesta de IP inesperada: {addr[0]}")
+            if len(response) >= 10 and response[9] != sid:
+                unmatched_sids.append(response[9])
+                continue
+            return parse_fins_response(
+                response,
+                expected_sid=sid,
+                expected_word_count=word_count,
+                raise_on_error=True,
+            )
+
+        discarded = ", ".join(f"0x{value:02X}" for value in unmatched_sids)
+        raise FINSProtocolError(
+            f"No llego SID esperado 0x{sid:02X}; descartados SID: {discarded}"
         )
 
     def read_dm_range(self, start: int, count: int) -> Dict[str, Any]:

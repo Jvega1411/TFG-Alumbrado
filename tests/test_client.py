@@ -162,16 +162,32 @@ class TestFINSClientReadMemoryArea:
         assert sent_packet[9] == 1
 
     @patch("fins.client.socket.socket")
-    def test_read_memory_area_rejects_mismatched_sid(self, mock_socket_class):
+    def test_read_memory_area_discards_unmatched_sid(self, mock_socket_class):
         mock_socket_instance = Mock()
         mock_socket_class.return_value = mock_socket_instance
-        mock_socket_instance.recvfrom.return_value = (
-            _make_response(words=[1], sid=2),
-            (Config.PLC_IP, 9600),
-        )
+        mock_socket_instance.recvfrom.side_effect = [
+            (_make_response(words=[99], sid=0x9E), (Config.PLC_IP, 9600)),
+            (_make_response(words=[1], sid=1), (Config.PLC_IP, 9600)),
+        ]
         client = FINSClient()
         client.connect()
-        with pytest.raises(FINSProtocolError, match="SID inesperado"):
+
+        result = client.read_memory_area("DM", 116, 1)
+
+        assert result["data"] == b"\x00\x01"
+        assert mock_socket_instance.recvfrom.call_count == 2
+
+    @patch("fins.client.socket.socket")
+    def test_read_memory_area_rejects_repeated_mismatched_sid(self, mock_socket_class):
+        mock_socket_instance = Mock()
+        mock_socket_class.return_value = mock_socket_instance
+        mock_socket_instance.recvfrom.side_effect = [
+            (_make_response(words=[1], sid=2), (Config.PLC_IP, 9600))
+            for _ in range(6)
+        ]
+        client = FINSClient()
+        client.connect()
+        with pytest.raises(FINSProtocolError, match="No llego SID esperado"):
             client.read_memory_area("DM", 116, 1)
 
     @patch("fins.client.socket.socket")
