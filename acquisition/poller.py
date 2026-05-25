@@ -15,7 +15,7 @@ from acquisition.decoders import (
 )
 from fins.client import FINSClient
 from fins.frame import FINSError
-from schemas.blocks import READ_BLOCKS, READ_BLOCKS_V2
+from schemas.blocks import READ_BLOCKS_V2
 
 logger = logging.getLogger(__name__)
 
@@ -27,21 +27,8 @@ def read_all_variables(client: FINSClient) -> dict:
     variables = _empty_variables()
     read_status = _empty_read_status()
 
-    _read_block("secciones", read_status, lambda: _read_secciones(client), lambda v: variables.update(v))
-    _read_block("modo", read_status, lambda: _read_modo(client), lambda v: variables.update(v))
-    _read_block("fotocelula", read_status, lambda: _read_fotocelula(client), lambda v: variables.update(v))
-    _read_block("reloj", read_status, lambda: _read_reloj(client), lambda v: variables.update(v))
-    _read_block("horarios", read_status, lambda: _read_horarios(client), lambda v: variables.update(v))
-    _read_block("diagnostico", read_status, lambda: _read_diagnostico(client), lambda v: variables.update(v))
-    _read_block(
-        "reset_temporizado",
-        read_status,
-        lambda: _read_reset_temporizado(client),
-        lambda v: variables.update(v),
-    )
-    _read_block("hmi_original", read_status, lambda: _read_hmi_original(client), lambda v: variables.update(v))
-    _read_block("reloj_ar", read_status, lambda: _read_reloj_ar(client), lambda v: variables.update(v))
-    _read_block("salidas_wr", read_status, lambda: _read_salidas_wr(client), lambda v: variables.update(v))
+    for block, reader in READERS:
+        _read_block(block, read_status, client, reader, variables.update)
 
     _attach_salida_wr(variables, read_status)
     variables["read_status"] = read_status
@@ -70,11 +57,12 @@ def _empty_read_status() -> dict:
 def _read_block(
     block: str,
     read_status: dict,
-    reader: Callable[[], dict],
+    client: FINSClient,
+    reader: Callable[[FINSClient], dict],
     apply_result: Callable[[dict], None],
 ) -> None:
     try:
-        apply_result(reader())
+        apply_result(reader(client))
         read_status[block] = {"status": "ok", "error": None}
     except (FINSError, OSError, ValueError, RuntimeError) as exc:
         read_status[block] = {"status": "failed", "error": str(exc)}
@@ -200,6 +188,20 @@ def _read_salidas_wr(client: FINSClient) -> dict:
             "physical_io_mapping_status": "pending_cio_map",
         }
     }
+
+
+READERS: tuple[tuple[str, Callable[[FINSClient], dict]], ...] = (
+    ("secciones", _read_secciones),
+    ("modo", _read_modo),
+    ("fotocelula", _read_fotocelula),
+    ("reloj", _read_reloj),
+    ("horarios", _read_horarios),
+    ("diagnostico", _read_diagnostico),
+    ("reset_temporizado", _read_reset_temporizado),
+    ("hmi_original", _read_hmi_original),
+    ("reloj_ar", _read_reloj_ar),
+    ("salidas_wr", _read_salidas_wr),
+)
 
 
 def _attach_salida_wr(variables: dict, read_status: dict) -> None:

@@ -19,6 +19,7 @@ if (-not $Root) {
 }
 $ok = $true
 $python = Join-Path $Root ".venv\Scripts\python.exe"
+$pipelineChecks = Join-Path $Root "scripts\node-config\pipeline_checks.py"
 
 function Check {
     param([string]$Label, [scriptblock]$Test)
@@ -54,23 +55,20 @@ function Test-TcpListen {
 
 function Invoke-AlumbradoPython {
     param(
-        [string]$Code,
+        [string]$Script,
         [string[]]$Arguments = @()
     )
-    $tmp = New-TemporaryFile
     $oldPythonPath = $env:PYTHONPATH
     try {
-        Set-Content -LiteralPath $tmp.FullName -Value $Code -Encoding utf8
         if ($oldPythonPath) {
             $env:PYTHONPATH = "$Root;$oldPythonPath"
         } else {
             $env:PYTHONPATH = $Root
         }
-        & $python $tmp.FullName @Arguments
+        & $python $Script @Arguments
         $script:LastPythonExitCode = $LASTEXITCODE
     } finally {
         $env:PYTHONPATH = $oldPythonPath
-        Remove-Item -LiteralPath $tmp.FullName -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -88,22 +86,14 @@ Check "Python venv existe" {
 
 Check "Configuracion efectiva MQTT/BD valida" {
     if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { return $false }
-    $code = @'
-from config.settings import Config
-Config.validate_mqtt()
-Config._validate_db()
-print(f"MQTT={Config.MQTT_BROKER_HOST}:{Config.MQTT_BROKER_PORT} topic={Config.MQTT_TOPIC}")
-print(f"DB={Config.DB_ESTADOS_URL}")
-'@
-    $output = Invoke-AlumbradoPython -Code $code
+    $output = Invoke-AlumbradoPython -Script $pipelineChecks -Arguments @("effective-config")
     $output | ForEach-Object { Write-Host "     $_" }
     return $script:LastPythonExitCode -eq 0
 }
 
 if (-not $MqttHost) {
     if (Test-Path -LiteralPath $python -PathType Leaf) {
-        $code = 'from config.settings import Config; print(Config.MQTT_BROKER_HOST)'
-        $mqttOutput = Invoke-AlumbradoPython -Code $code
+        $mqttOutput = Invoke-AlumbradoPython -Script $pipelineChecks -Arguments @("mqtt-broker-host")
         if ($mqttOutput) {
             $MqttHost = $mqttOutput.Trim()
         }
@@ -145,90 +135,8 @@ Check "API responde HTTP" {
 
 Check "BD recibe ciclos nuevos y estado legible" {
     if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { return $false }
-    $code = @'
-import sys
-import time
-from datetime import datetime, timezone
-from sqlalchemy import create_engine, text
-from config.settings import Config
-
-max_age_seconds = int(sys.argv[1])
-max_ingest_age_seconds = int(sys.argv[2])
-sample_wait_seconds = int(sys.argv[3])
-
-
-def parse_ts(raw):
-    ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
-    return ts.astimezone(timezone.utc)
-
-
-def latest(conn):
-    row = conn.execute(text(
-        "select id,timestamp,fins_ok,fins_error,secciones_status,secciones_error "
-        "from ciclo order by id desc limit 1"
-    )).mappings().first()
-    if row is None:
-        raise SystemExit("tabla ciclo vacia")
-    ts = parse_ts(row["timestamp"])
-    age = (datetime.now(timezone.utc) - ts).total_seconds()
-    return row, ts, age
-
-
-if sample_wait_seconds <= 0:
-    acquisition_wait = int(max(10, round(Config.ACQUISITION_INTERVAL_S * 3)))
-    heartbeat_wait = int(round(Config.HEARTBEAT_INTERVAL_S * 1.25))
-    sample_wait_seconds = max(acquisition_wait, heartbeat_wait)
-    sample_wait_seconds = min(sample_wait_seconds, max_ingest_age_seconds)
-
-engine = create_engine(Config.DB_ESTADOS_URL)
-with engine.connect() as conn:
-    tables = {r[0] for r in conn.execute(text("select name from sqlite_master where type='table'"))}
-    if "ciclo" not in tables:
-        raise SystemExit("tabla ciclo no existe")
-    count = conn.execute(text("select count(*) from ciclo")).scalar_one()
-    if count < 1:
-        raise SystemExit("tabla ciclo vacia")
-
-    first, first_ts, first_age = latest(conn)
-    print(
-        f"sample1 id={first['id']} ts={first['timestamp']} age_s={first_age:.0f} "
-        f"wait_s={sample_wait_seconds}"
-    )
-    if first_age < -120:
-        raise SystemExit(f"timestamp futuro en BD: age_s={first_age:.0f}")
-    if first_age > max_age_seconds:
-        raise SystemExit(f"datos obsoletos: {first_age:.0f}s > {max_age_seconds} s")
-
-    time.sleep(sample_wait_seconds)
-    second, second_ts, second_age = latest(conn)
-    print(
-        f"sample2 id={second['id']} ts={second['timestamp']} age_s={second_age:.0f} "
-        f"fins_ok={second['fins_ok']} secciones_status={second['secciones_status']}"
-    )
-    if second_age < -120:
-        raise SystemExit(f"timestamp futuro en BD: age_s={second_age:.0f}")
-    if second_age > max_ingest_age_seconds:
-        raise SystemExit(
-            f"ingesta sin datos frescos: {second_age:.0f}s > {max_ingest_age_seconds} s"
-        )
-    if int(second["id"]) <= int(first["id"]):
-        raise SystemExit(
-            f"ingesta no avanza: id inicial={first['id']} id final={second['id']}"
-        )
-    if second_ts <= first_ts:
-        raise SystemExit(
-            f"timestamp no avanza: ts inicial={first['timestamp']} ts final={second['timestamp']}"
-        )
-    if not second["fins_ok"]:
-        raise SystemExit(f"ultimo ciclo FINS fallo: {second['fins_error']}")
-    if second["secciones_status"] != "ok":
-        raise SystemExit(
-            f"secciones no ok: {second['secciones_status']} {second['secciones_error']}"
-        )
-'@
-    $output = Invoke-AlumbradoPython -Code $code -Arguments @(
+    $output = Invoke-AlumbradoPython -Script $pipelineChecks -Arguments @(
+        "db-liveness",
         "$MaxDataAgeSeconds",
         "$MaxIngestAgeSeconds",
         "$LivenessSampleWaitSeconds"

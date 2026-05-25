@@ -1,4 +1,3 @@
-import json
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -15,6 +14,7 @@ from model.fase2 import (
     SalidasWrState,
     SeccionEstado,
 )
+from model.json_columns import load_json_column
 from schemas.blocks import READ_BLOCKS
 from schemas.lectura import (
     CicloResponse,
@@ -310,7 +310,7 @@ def get_ciclo_salidas_wr(ciclo_id: int, db: Session = Depends(get_db)):
     row = _get_state(db, SalidasWrState, ciclo_id)
     return {
         "ciclo_id": row.ciclo_id,
-        "raw_words": json.loads(row.raw_words),
-        "cercha_salidas": json.loads(row.cercha_salidas),
+        "raw_words": load_json_column(row.raw_words),
+        "cercha_salidas": load_json_column(row.cercha_salidas),
         "physical_io_mapping_status": row.physical_io_mapping_status,
     }

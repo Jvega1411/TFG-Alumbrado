@@ -1,3 +1,4 @@
+import argparse
 import json
 import logging
 import time
@@ -102,5 +103,17 @@ def _publish_payload(mqtt_client: mqtt.Client, payload: dict) -> bool:
     return published
 
 
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Run the read-only FINS to MQTT publisher")
+    parser.add_argument(
+        "--max-cycles",
+        type=int,
+        default=None,
+        help="Stop after N cycles; intended for manual smoke tests.",
+    )
+    args = parser.parse_args(argv)
+    run_publisher(max_cycles=args.max_cycles)
+
+
 if __name__ == '__main__':
-    run_publisher()
+    main()

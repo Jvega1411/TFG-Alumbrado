@@ -3,7 +3,7 @@ from unittest.mock import Mock, call, patch
 
 import pytest
 
-from acquisition.publisher import _payloads_equal, _publish_payload, run_publisher
+from acquisition.publisher import _payloads_equal, _publish_payload, main, run_publisher
 from tests.v2_helpers import sample_payload_dict, sample_variables
 
 
@@ -147,3 +147,9 @@ class TestRunPublisher:
         connect_call = next(c for c in mock_mqtt.method_calls if c[0] == "connect")
         assert mock_mqtt.method_calls.index(call.username_pw_set("gwpub", "test-password")) < \
             mock_mqtt.method_calls.index(connect_call)
+
+    def test_main_accepts_max_cycles_argument(self):
+        with patch("acquisition.publisher.run_publisher") as mock_run:
+            main(["--max-cycles", "1"])
+
+        mock_run.assert_called_once_with(max_cycles=1)

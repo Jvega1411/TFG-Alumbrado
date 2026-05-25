@@ -64,10 +64,7 @@ echo ""
 echo "=== [4/5] Prueba manual max_cycles=1 ==="
 cd "$REPO"
 . .venv/bin/activate
-python - <<'PY'
-from acquisition.publisher import run_publisher
-run_publisher(max_cycles=1)
-PY
+python -m acquisition.publisher --max-cycles 1
 
 echo ""
 echo "=== [5/5] Revisando resultado ==="

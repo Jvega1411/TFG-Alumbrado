@@ -1,4 +1,3 @@
-import json
 import logging
 
 import paho.mqtt.client as mqtt
@@ -18,6 +17,7 @@ from model.fase2 import (
     SalidasWrState,
     SeccionEstado,
 )
+from model.json_columns import dump_json_column
 from schemas.blocks import READ_BLOCKS_V2
 from subscriber.payload_schema import parse_payload
 
@@ -78,7 +78,7 @@ def _add_ciclo(payload, session: Session) -> Ciclo:
         fotocelula_entrada=fotocelula.entrada_raw if fotocelula else None,
         fotocelula_mem_fun=fotocelula.mem_fun if fotocelula else None,
         fotocelula_mem_act=fotocelula.filtrada_activa if fotocelula else None,
-        plc_reloj_raw_words=json.dumps(reloj.raw_words) if reloj else None,
+        plc_reloj_raw_words=dump_json_column(reloj.raw_words) if reloj else None,
         plc_reloj_encoding=reloj.encoding if reloj else None,
         plc_seg=reloj.decoded.segundo if reloj else None,
         plc_min=reloj.decoded.minuto if reloj else None,
@@ -122,13 +122,9 @@ def _add_horarios(payload, session: Session, ciclo: Ciclo) -> None:
                     tramo_id=tramo.tramo,
                     inicio_raw=None,
                     fin_raw=None,
-                    inicio_raw_words=(
-                        json.dumps(tramo.inicio_raw)
-                        if tramo.inicio_raw is not None
-                        else None
-                    ),
-                    fin_raw_words=json.dumps(tramo.fin_raw),
-                    source_json=json.dumps(tramo.source),
+                    inicio_raw_words=dump_json_column(tramo.inicio_raw),
+                    fin_raw_words=dump_json_column(tramo.fin_raw),
+                    source_json=dump_json_column(tramo.source),
                     inicio_hora=tramo.inicio_hora,
                     inicio_minuto=tramo.inicio_minuto,
                     fin_hora=tramo.fin_hora,
@@ -161,7 +157,7 @@ def _add_reset_temporizado(payload, session: Session, ciclo: Ciclo) -> None:
             ResetTemporizadoState(
                 ciclo_id=ciclo.id,
                 w1_raw=payload.reset_temporizado.w1_raw,
-                dm_raw_words=json.dumps(payload.reset_temporizado.dm_raw_words),
+                dm_raw_words=dump_json_column(payload.reset_temporizado.dm_raw_words),
                 horario_global_activo=payload.reset_temporizado.horario_global_activo,
                 reset_activo=reset.activo,
                 retardo_segundo_apagado_s=reset.retardo_segundo_apagado_s,
@@ -215,8 +211,8 @@ def _add_salidas_wr(payload, session: Session, ciclo: Ciclo) -> None:
         session.add(
             SalidasWrState(
                 ciclo_id=ciclo.id,
-                raw_words=json.dumps(payload.salidas_wr.raw_words),
-                cercha_salidas=json.dumps(
+                raw_words=dump_json_column(payload.salidas_wr.raw_words),
+                cercha_salidas=dump_json_column(
                     [row.model_dump() for row in payload.salidas_wr.cercha_salidas]
                 ),
                 physical_io_mapping_status=payload.salidas_wr.physical_io_mapping_status,

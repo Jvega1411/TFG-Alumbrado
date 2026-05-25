@@ -1,16 +1,13 @@
-import json
 from datetime import datetime
 from typing import Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from model.json_columns import load_json_column
+
 
 def _parse_json_value(value):
-    if value is None or isinstance(value, (dict, list)):
-        return value
-    if isinstance(value, str):
-        return json.loads(value)
-    return value
+    return load_json_column(value)
 
 
 class CicloResponse(BaseModel):
