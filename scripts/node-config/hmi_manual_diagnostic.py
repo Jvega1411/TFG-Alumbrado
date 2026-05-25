@@ -27,14 +27,24 @@ from model.database import create_db_engine
 from model.json_columns import load_json_column
 
 SECTION_COUNT = 112
+HMI_SCREEN1_START = 0
 HMI_H_WORD = 10
+HMI_SCREEN2_START = 32
+HMI_SCREEN_WORDS = 11
 H_SECTION_START = 11
 H_SECTION_WORDS = 21
 H_AUTO_OFFSET = 0
 H_MANUAL_OFFSET = 7
 H_INTERNAL_OFFSET = 14
+W_RESET_START = 1
 W_SALIDA_START = 4
 W_SALIDA_WORDS = 10
+W_FOTOCELULA_START = 25
+H_FOTOCELULA_START = 100
+DM_CONTEXT_START = 100
+DM_CONTEXT_WORDS = 17
+DM_HMI1_INDEX_START = 1008
+DM_HMI2_INDEX_START = 3630
 
 
 def _valid_section(value: str) -> int:
@@ -92,6 +102,63 @@ def _range_text(values: list[int]) -> str:
     return ",".join(ranges)
 
 
+def _hmi_screen_state(raw_word: int, selected: int, previous: int, prefix: str) -> dict[str, Any]:
+    selected_ui = selected + 1 if 0 <= selected < SECTION_COUNT else None
+    previous_ui = previous + 1 if 0 <= previous < SECTION_COUNT else None
+    return {
+        "raw_word": raw_word,
+        "raw_word_hex": f"0x{raw_word & 0xFFFF:04X}",
+        "indice_seccion_raw": selected,
+        "seccion_ui": selected_ui,
+        "indice_anterior_raw": previous,
+        "seccion_anterior_ui": previous_ui,
+        "automatico_seccion_seleccionada": get_bit(raw_word, 12),
+        "manual_seccion_seleccionada": get_bit(raw_word, 13),
+        "orden_transferencia_comun": get_bit(raw_word, 14),
+        "indicacion_activacion_alumbrado_seccion": get_bit(raw_word, 15),
+        "source_word": prefix,
+    }
+
+
+def _context_state(
+    *,
+    w1_raw: int | None = None,
+    h100_raw: int | None = None,
+    w25_raw: int | None = None,
+    d100_d116_raw: list[int] | None = None,
+) -> dict[str, Any]:
+    context: dict[str, Any] = {}
+    if w1_raw is not None:
+        context["W1"] = {
+            "raw": w1_raw,
+            "raw_hex": f"0x{w1_raw & 0xFFFF:04X}",
+            "horario_global_activo": get_bit(w1_raw, 1),
+            "reset_temporizado_activo": get_bit(w1_raw, 2),
+        }
+    if h100_raw is not None:
+        context["H100"] = {
+            "raw": h100_raw,
+            "raw_hex": f"0x{h100_raw & 0xFFFF:04X}",
+            "fotocelula_mem_fun": get_bit(h100_raw, 0),
+            "fotocelula_filtrada_activa": get_bit(h100_raw, 1),
+        }
+    if w25_raw is not None:
+        context["W25"] = {
+            "raw": w25_raw,
+            "raw_hex": f"0x{w25_raw & 0xFFFF:04X}",
+            "fotocelula_entrada_raw": get_bit(w25_raw, 0),
+        }
+    if d100_d116_raw is not None:
+        if len(d100_d116_raw) != DM_CONTEXT_WORDS:
+            raise ValueError(f"D100..D116 requires {DM_CONTEXT_WORDS} words")
+        context["D100_D116"] = {
+            "raw_words": d100_d116_raw,
+            "D106_contador_apagados": d100_d116_raw[6],
+            "D116_modfunalu": d100_d116_raw[16],
+        }
+    return context
+
+
 def decode_plc_snapshot(
     *,
     h10_raw: int,
@@ -99,6 +166,15 @@ def decode_plc_snapshot(
     d1009: int,
     h11_h31_raw: list[int],
     w4_w13_raw: list[int],
+    h42_raw: int | None = None,
+    d3630: int | None = None,
+    d3631: int | None = None,
+    h0_h10_raw: list[int] | None = None,
+    h32_h42_raw: list[int] | None = None,
+    w1_raw: int | None = None,
+    h100_raw: int | None = None,
+    w25_raw: int | None = None,
+    d100_d116_raw: list[int] | None = None,
     timestamp_utc: datetime | None = None,
     selected_section: int | None = None,
 ) -> dict[str, Any]:
@@ -106,6 +182,10 @@ def decode_plc_snapshot(
         raise ValueError(f"H11..H31 requires {H_SECTION_WORDS} words")
     if len(w4_w13_raw) != W_SALIDA_WORDS:
         raise ValueError(f"W4..W13 requires {W_SALIDA_WORDS} words")
+    if h0_h10_raw is not None and len(h0_h10_raw) != HMI_SCREEN_WORDS:
+        raise ValueError(f"H0..H10 requires {HMI_SCREEN_WORDS} words")
+    if h32_h42_raw is not None and len(h32_h42_raw) != HMI_SCREEN_WORDS:
+        raise ValueError(f"H32..H42 requires {HMI_SCREEN_WORDS} words")
 
     timestamp_utc = timestamp_utc or datetime.now(timezone.utc)
     hmi_section = d1008 + 1 if 0 <= d1008 < SECTION_COUNT else None
@@ -122,7 +202,7 @@ def decode_plc_snapshot(
     internal_ids = _active_ids(sections, "salida_interna")
     wr_ids = _active_ids(sections, "salida_wr")
 
-    return {
+    snapshot = {
         "timestamp_utc": timestamp_utc.isoformat(),
         "hmi_original": {
             "h10_raw": h10_raw,
@@ -156,6 +236,31 @@ def decode_plc_snapshot(
             "W4_W13": w4_w13_raw,
         },
     }
+    if h42_raw is not None and d3630 is not None and d3631 is not None:
+        snapshot["hmi_screen_2"] = _hmi_screen_state(h42_raw, d3630, d3631, "H42")
+        snapshot["raw_words"]["H42"] = h42_raw
+        snapshot["raw_words"]["D3630_D3631"] = [d3630, d3631]
+    if h0_h10_raw is not None:
+        snapshot["raw_words"]["H0_H10"] = h0_h10_raw
+    if h32_h42_raw is not None:
+        snapshot["raw_words"]["H32_H42"] = h32_h42_raw
+    context = _context_state(
+        w1_raw=w1_raw,
+        h100_raw=h100_raw,
+        w25_raw=w25_raw,
+        d100_d116_raw=d100_d116_raw,
+    )
+    if context:
+        snapshot["context"] = context
+        if w1_raw is not None:
+            snapshot["raw_words"]["W1"] = w1_raw
+        if h100_raw is not None:
+            snapshot["raw_words"]["H100"] = h100_raw
+        if w25_raw is not None:
+            snapshot["raw_words"]["W25"] = w25_raw
+        if d100_d116_raw is not None:
+            snapshot["raw_words"]["D100_D116"] = d100_d116_raw
+    return snapshot
 
 
 def _format_bool(value: Any) -> str:
@@ -183,6 +288,25 @@ def format_plc_snapshot(snapshot: dict[str, Any], *, show_raw: bool = False) -> 
             f"ind_act={_format_bool(hmi['indicacion_activacion_alumbrado_seccion'])}"
         ),
     ]
+    screen_2 = snapshot.get("hmi_screen_2")
+    if screen_2:
+        lines.extend(
+            [
+                (
+                    "HMI screen2: "
+                    f"D3630={screen_2['indice_seccion_raw']} -> seccion_ui={screen_2['seccion_ui']} | "
+                    f"D3631={screen_2['indice_anterior_raw']} -> seccion_ui={screen_2['seccion_anterior_ui']} | "
+                    f"H42={screen_2['raw_word_hex']}"
+                ),
+                (
+                    "H42 flags: "
+                    f"auto_sel={_format_bool(screen_2['automatico_seccion_seleccionada'])} "
+                    f"manual_sel={_format_bool(screen_2['manual_seccion_seleccionada'])} "
+                    f"transfer={_format_bool(screen_2['orden_transferencia_comun'])} "
+                    f"ind_act={_format_bool(screen_2['indicacion_activacion_alumbrado_seccion'])}"
+                ),
+            ]
+        )
     if target is None:
         lines.append("target_section: none (D1008 fuera de 0..111 y no se paso --section)")
     else:
@@ -211,6 +335,31 @@ def format_plc_snapshot(snapshot: dict[str, Any], *, show_raw: bool = False) -> 
             ),
         ]
     )
+    context = snapshot.get("context", {})
+    if context:
+        context_parts = []
+        if "W1" in context:
+            w1 = context["W1"]
+            context_parts.append(
+                f"W1={w1['raw_hex']} horario={_format_bool(w1['horario_global_activo'])} "
+                f"reset={_format_bool(w1['reset_temporizado_activo'])}"
+            )
+        if "H100" in context:
+            h100 = context["H100"]
+            context_parts.append(
+                f"H100={h100['raw_hex']} foto_filtrada={_format_bool(h100['fotocelula_filtrada_activa'])}"
+            )
+        if "W25" in context:
+            w25 = context["W25"]
+            context_parts.append(
+                f"W25={w25['raw_hex']} foto_raw={_format_bool(w25['fotocelula_entrada_raw'])}"
+            )
+        if "D100_D116" in context:
+            dm = context["D100_D116"]
+            context_parts.append(
+                f"D106={dm['D106_contador_apagados']} D116={dm['D116_modfunalu']}"
+            )
+        lines.append("context: " + " | ".join(context_parts))
     if show_raw:
         raw = snapshot["raw_words"]
         lines.extend(
@@ -219,6 +368,93 @@ def format_plc_snapshot(snapshot: dict[str, Any], *, show_raw: bool = False) -> 
                 f"raw W4..W13: {raw['W4_W13']}",
             ]
         )
+        if "H0_H10" in raw:
+            lines.append(f"raw H0..H10: {raw['H0_H10']}")
+        if "H32_H42" in raw:
+            lines.append(f"raw H32..H42: {raw['H32_H42']}")
+        if "D100_D116" in raw:
+            lines.append(f"raw D100..D116: {raw['D100_D116']}")
+    return "\n".join(lines)
+
+
+def _delta(prev_values: list[int], curr_values: list[int]) -> tuple[list[int], list[int]]:
+    prev = set(prev_values)
+    curr = set(curr_values)
+    return sorted(curr - prev), sorted(prev - curr)
+
+
+def _format_delta(label: str, prev_values: list[int], curr_values: list[int]) -> str | None:
+    added, removed = _delta(prev_values, curr_values)
+    if not added and not removed:
+        return None
+    return f"changed {label}: added={_range_text(added)} removed={_range_text(removed)}"
+
+
+def _format_value_change(label: str, old: Any, new: Any) -> str | None:
+    if old == new:
+        return None
+    return f"changed {label}: {old} -> {new}"
+
+
+def _hmi_diff_lines(label: str, old: dict[str, Any] | None, new: dict[str, Any] | None) -> list[str]:
+    if old is None and new is None:
+        return []
+    if old is None:
+        return [f"changed {label}: absent -> present"]
+    if new is None:
+        return [f"changed {label}: present -> absent"]
+    lines = []
+    for field in [
+        "raw_word_hex",
+        "indice_seccion_raw",
+        "seccion_ui",
+        "manual_seccion_seleccionada",
+        "indicacion_activacion_alumbrado_seccion",
+    ]:
+        line = _format_value_change(f"{label}.{field}", old.get(field), new.get(field))
+        if line:
+            lines.append(line)
+    return lines
+
+
+def _context_diff_lines(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
+    lines = []
+    for group, fields in {
+        "W1": ["raw_hex", "horario_global_activo", "reset_temporizado_activo"],
+        "H100": ["raw_hex", "fotocelula_filtrada_activa"],
+        "W25": ["raw_hex", "fotocelula_entrada_raw"],
+        "D100_D116": ["D106_contador_apagados", "D116_modfunalu"],
+    }.items():
+        old_group = old.get(group, {})
+        new_group = new.get(group, {})
+        for field in fields:
+            line = _format_value_change(
+                f"{group}.{field}",
+                old_group.get(field),
+                new_group.get(field),
+            )
+            if line:
+                lines.append(line)
+    return lines
+
+
+def format_plc_diff(previous: dict[str, Any] | None, current: dict[str, Any]) -> str:
+    if previous is None:
+        return format_plc_snapshot(current)
+    lines = [f"timestamp_utc: {current['timestamp_utc']}"]
+    for field in ["manual_activo", "salida_interna", "salida_wr"]:
+        line = _format_delta(
+            field,
+            previous["active_ids"][field],
+            current["active_ids"][field],
+        )
+        if line:
+            lines.append(line)
+    lines.extend(_hmi_diff_lines("screen1", previous.get("hmi_original"), current.get("hmi_original")))
+    lines.extend(_hmi_diff_lines("screen2", previous.get("hmi_screen_2"), current.get("hmi_screen_2")))
+    lines.extend(_context_diff_lines(previous.get("context", {}), current.get("context", {})))
+    if len(lines) == 1:
+        return ""
     return "\n".join(lines)
 
 
@@ -247,10 +483,31 @@ def poll_plc(args: argparse.Namespace) -> int:
 
     _validate_fins_config(args.local_port)
     with FINSClient() as client:
+        previous_snapshot = None
         for sample in range(args.samples):
             try:
-                h10_raw = words(client.read_h_range(HMI_H_WORD, 1))[0]
-                d1008, d1009 = words(client.read_dm_range(1008, 2))
+                h0_h10_raw = None
+                h32_h42_raw = None
+                h42_raw = None
+                d3630 = None
+                d3631 = None
+                w1_raw = None
+                h100_raw = None
+                w25_raw = None
+                d100_d116_raw = None
+                if args.full:
+                    h0_h10_raw = words(client.read_h_range(HMI_SCREEN1_START, HMI_SCREEN_WORDS))
+                    h10_raw = h0_h10_raw[HMI_H_WORD - HMI_SCREEN1_START]
+                    h32_h42_raw = words(client.read_h_range(HMI_SCREEN2_START, HMI_SCREEN_WORDS))
+                    h42_raw = h32_h42_raw[42 - HMI_SCREEN2_START]
+                    d3630, d3631 = words(client.read_dm_range(DM_HMI2_INDEX_START, 2))
+                    w1_raw = words(client.read_w_range(W_RESET_START, 1))[0]
+                    h100_raw = words(client.read_h_range(H_FOTOCELULA_START, 1))[0]
+                    w25_raw = words(client.read_w_range(W_FOTOCELULA_START, 1))[0]
+                    d100_d116_raw = words(client.read_dm_range(DM_CONTEXT_START, DM_CONTEXT_WORDS))
+                else:
+                    h10_raw = words(client.read_h_range(HMI_H_WORD, 1))[0]
+                d1008, d1009 = words(client.read_dm_range(DM_HMI1_INDEX_START, 2))
                 h11_h31_raw = words(client.read_h_range(H_SECTION_START, H_SECTION_WORDS))
                 w4_w13_raw = words(client.read_w_range(W_SALIDA_START, W_SALIDA_WORDS))
                 snapshot = decode_plc_snapshot(
@@ -259,15 +516,31 @@ def poll_plc(args: argparse.Namespace) -> int:
                     d1009=d1009,
                     h11_h31_raw=h11_h31_raw,
                     w4_w13_raw=w4_w13_raw,
+                    h42_raw=h42_raw,
+                    d3630=d3630,
+                    d3631=d3631,
+                    h0_h10_raw=h0_h10_raw,
+                    h32_h42_raw=h32_h42_raw,
+                    w1_raw=w1_raw,
+                    h100_raw=h100_raw,
+                    w25_raw=w25_raw,
+                    d100_d116_raw=d100_d116_raw,
                     timestamp_utc=datetime.now(timezone.utc),
                     selected_section=args.section,
                 )
                 if args.json:
                     print(json.dumps(snapshot, ensure_ascii=False, sort_keys=True))
                 else:
-                    if args.samples > 1:
-                        print(f"--- sample {sample + 1}/{args.samples} ---")
-                    print(format_plc_snapshot(snapshot, show_raw=args.raw))
+                    output = (
+                        format_plc_diff(previous_snapshot, snapshot)
+                        if args.diff
+                        else format_plc_snapshot(snapshot, show_raw=args.raw)
+                    )
+                    if output:
+                        if args.samples > 1:
+                            print(f"--- sample {sample + 1}/{args.samples} ---")
+                        print(output)
+                previous_snapshot = snapshot
             except (FINSError, OSError, RuntimeError, ValueError) as exc:
                 error = {
                     "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -419,6 +692,8 @@ def build_parser() -> argparse.ArgumentParser:
     poll_parser.add_argument("--samples", type=int, default=1)
     poll_parser.add_argument("--interval-seconds", type=float, default=2.0)
     poll_parser.add_argument("--local-port", type=int)
+    poll_parser.add_argument("--full", action="store_true")
+    poll_parser.add_argument("--diff", action="store_true")
     poll_parser.add_argument("--json", action="store_true")
     poll_parser.add_argument("--raw", action="store_true")
     poll_parser.set_defaults(func=poll_plc)
