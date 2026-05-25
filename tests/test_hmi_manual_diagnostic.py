@@ -121,6 +121,49 @@ def test_format_plc_diff_reports_changed_hmi_and_sections():
     assert "changed screen1.manual_seccion_seleccionada: False -> True" in text
 
 
+def test_format_word_change_reports_bit_delta():
+    diagnostic = _load_hmi_manual_diagnostic()
+
+    text = diagnostic.format_word_change("H18", 0x0000, 0x0003)
+
+    assert text == "H18: 0 -> 3 (0x0000 -> 0x0003) bits added=0-1 removed=-"
+
+
+def test_format_wide_diff_reports_only_changed_words():
+    diagnostic = _load_hmi_manual_diagnostic()
+
+    text = diagnostic.format_wide_diff(
+        {"H18": 0, "D116": 1},
+        {"H18": 1, "D116": 1},
+        limit=10,
+    )
+
+    assert "H18: 0 -> 1" in text
+    assert "D116" not in text
+
+
+def test_parser_accepts_wide_plc_mode():
+    diagnostic = _load_hmi_manual_diagnostic()
+    args = diagnostic.build_parser().parse_args(
+        [
+            "wide-plc",
+            "--samples",
+            "2",
+            "--interval-seconds",
+            "5",
+            "--local-port",
+            "9600",
+            "--limit",
+            "20",
+        ]
+    )
+
+    assert args.samples == 2
+    assert args.interval_seconds == 5
+    assert args.local_port == 9600
+    assert args.limit == 20
+
+
 def test_parser_accepts_full_diff_mode():
     diagnostic = _load_hmi_manual_diagnostic()
     args = diagnostic.build_parser().parse_args(

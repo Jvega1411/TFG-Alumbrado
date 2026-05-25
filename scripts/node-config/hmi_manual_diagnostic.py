@@ -45,6 +45,29 @@ DM_CONTEXT_START = 100
 DM_CONTEXT_WORDS = 17
 DM_HMI1_INDEX_START = 1008
 DM_HMI2_INDEX_START = 3630
+FINS_CHUNK_WORDS = 900
+
+WIDE_TRACE_RANGES: tuple[tuple[str, str, int, int], ...] = (
+    ("HR", "H", 0, 43),
+    ("HR", "H", 100, 1),
+    ("WR", "W", 0, 14),
+    ("WR", "W", 25, 1),
+    ("WR", "W", 400, 4),
+    ("DM", "D", 100, 17),
+    ("DM", "D", 1000, 2652),
+    ("DM", "D", 20000, 1),
+    ("AR", "A", 200, 1),
+    ("AR", "A", 401, 2),
+    ("AR", "A", 450, 24),
+    ("AR", "A", 500, 1),
+    ("CIO", "CIO", 0, 16),
+)
+
+WIDE_VOLATILE_RANGES: tuple[tuple[str, str, int, int], ...] = (
+    ("DM", "D", 500, 21),
+    ("AR", "A", 262, 3),
+    ("AR", "A", 351, 3),
+)
 
 
 def _valid_section(value: str) -> int:
@@ -396,6 +419,30 @@ def _format_value_change(label: str, old: Any, new: Any) -> str | None:
     return f"changed {label}: {old} -> {new}"
 
 
+def _word_bit_delta(old: int, new: int) -> tuple[list[int], list[int]]:
+    added = []
+    removed = []
+    for bit in range(16):
+        was = get_bit(old, bit)
+        now = get_bit(new, bit)
+        if now and not was:
+            added.append(bit)
+        elif was and not now:
+            removed.append(bit)
+    return added, removed
+
+
+def format_word_change(address: str, old: int, new: int) -> str:
+    added, removed = _word_bit_delta(old, new)
+    bits = ""
+    if added or removed:
+        bits = f" bits added={_range_text(added)} removed={_range_text(removed)}"
+    return (
+        f"{address}: {old} -> {new} "
+        f"(0x{old & 0xFFFF:04X} -> 0x{new & 0xFFFF:04X}){bits}"
+    )
+
+
 def _hmi_diff_lines(label: str, old: dict[str, Any] | None, new: dict[str, Any] | None) -> list[str]:
     if old is None and new is None:
         return []
@@ -558,6 +605,98 @@ def poll_plc(args: argparse.Namespace) -> int:
     return 0
 
 
+def _read_words_chunked(client, area: str, start: int, count: int) -> list[int]:
+    values: list[int] = []
+    offset = 0
+    while offset < count:
+        chunk = min(FINS_CHUNK_WORDS, count - offset)
+        values.extend(words(client.read_memory_area(area, start + offset, chunk)))
+        offset += chunk
+    return values
+
+
+def _wide_ranges(include_volatile: bool) -> tuple[tuple[str, str, int, int], ...]:
+    if include_volatile:
+        return WIDE_TRACE_RANGES + WIDE_VOLATILE_RANGES
+    return WIDE_TRACE_RANGES
+
+
+def read_wide_snapshot(client, include_volatile: bool = False) -> dict[str, int]:
+    snapshot: dict[str, int] = {}
+    for area, prefix, start, count in _wide_ranges(include_volatile):
+        values = _read_words_chunked(client, area, start, count)
+        for offset, value in enumerate(values):
+            snapshot[f"{prefix}{start + offset}"] = value
+    return snapshot
+
+
+def format_wide_diff(
+    previous: dict[str, int] | None,
+    current: dict[str, int],
+    *,
+    limit: int,
+) -> str:
+    if previous is None:
+        non_zero = [
+            f"{address}=0x{value & 0xFFFF:04X}"
+            for address, value in sorted(current.items())
+            if value
+        ]
+        return (
+            f"wide baseline: {len(current)} words leidos, "
+            f"{len(non_zero)} words no cero"
+            + (f"\nnon_zero: {', '.join(non_zero[:limit])}" if non_zero else "")
+        )
+
+    lines = []
+    for address in sorted(current):
+        old = previous.get(address)
+        new = current[address]
+        if old is None or old == new:
+            continue
+        lines.append(format_word_change(address, old, new))
+        if len(lines) >= limit:
+            lines.append(f"... cambios truncados a --limit {limit}")
+            break
+    return "\n".join(lines)
+
+
+def wide_plc(args: argparse.Namespace) -> int:
+    from fins.client import FINSClient
+    from fins.frame import FINSError
+
+    if args.samples < 1:
+        raise SystemExit("--samples debe ser >= 1")
+    if args.samples > 1 and args.interval_seconds < 2.0:
+        raise SystemExit("--interval-seconds no puede bajar de 2.0 contra PLC real")
+    if args.limit < 1:
+        raise SystemExit("--limit debe ser >= 1")
+
+    _validate_fins_config(args.local_port)
+    ranges = _wide_ranges(args.include_volatile)
+    total_words = sum(count for _, _, _, count in ranges)
+    print(
+        f"wide-plc read-only: {len(ranges)} rangos, {total_words} words por muestra, "
+        f"interval={args.interval_seconds}s"
+    )
+    with FINSClient() as client:
+        previous_snapshot = None
+        for sample in range(args.samples):
+            try:
+                snapshot = read_wide_snapshot(client, include_volatile=args.include_volatile)
+                output = format_wide_diff(previous_snapshot, snapshot, limit=args.limit)
+                if output:
+                    print(f"--- sample {sample + 1}/{args.samples} ---")
+                    print(output)
+                previous_snapshot = snapshot
+            except (FINSError, OSError, RuntimeError, ValueError) as exc:
+                print(f"--- sample {sample + 1}/{args.samples} ---")
+                print(f"ERROR: {exc}")
+            if sample < args.samples - 1:
+                time.sleep(args.interval_seconds)
+    return 0
+
+
 def _bool_text(value: Any) -> str:
     if value is None:
         return "?"
@@ -697,6 +836,14 @@ def build_parser() -> argparse.ArgumentParser:
     poll_parser.add_argument("--json", action="store_true")
     poll_parser.add_argument("--raw", action="store_true")
     poll_parser.set_defaults(func=poll_plc)
+
+    wide_parser = subparsers.add_parser("wide-plc")
+    wide_parser.add_argument("--samples", type=int, default=60)
+    wide_parser.add_argument("--interval-seconds", type=float, default=5.0)
+    wide_parser.add_argument("--local-port", type=int)
+    wide_parser.add_argument("--limit", type=int, default=80)
+    wide_parser.add_argument("--include-volatile", action="store_true")
+    wide_parser.set_defaults(func=wide_plc)
 
     db_parser = subparsers.add_parser("inspect-db")
     db_parser.add_argument("--limit", type=int, default=10)
