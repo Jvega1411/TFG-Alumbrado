@@ -142,6 +142,26 @@ def test_format_wide_diff_reports_only_changed_words():
     assert "D116" not in text
 
 
+def test_filter_known_volatiles_keeps_hmi_and_output_candidates():
+    diagnostic = _load_hmi_manual_diagnostic()
+
+    filtered = diagnostic.filter_known_volatiles(
+        {"A351": 1, "D500": 2, "W0": 3, "H18": 4, "W4": 5, "CIO1070": 6}
+    )
+
+    assert filtered == {"H18": 4, "W4": 5, "CIO1070": 6}
+
+
+def test_decode_ascii_words_decodes_high_low_bytes_until_nul():
+    diagnostic = _load_hmi_manual_diagnostic()
+
+    text = diagnostic.decode_ascii_words(
+        [0x414D, 0x204E, 0x3120, 0x4C31, 0x4C32, 0x0000]
+    )
+
+    assert text == "AM N1 L1L2"
+
+
 def test_format_wide_status_reports_liveness_without_changes():
     diagnostic = _load_hmi_manual_diagnostic()
 
@@ -175,6 +195,7 @@ def test_parser_accepts_wide_plc_mode():
     assert args.limit == 20
     assert args.status_every == 3
     assert args.profile == "standard"
+    assert args.show_known_volatile is False
 
 
 def test_parser_accepts_exhaustive_wide_plc_profile():
@@ -213,6 +234,16 @@ def test_parser_accepts_full_diff_mode():
 
     assert args.full is True
     assert args.diff is True
+
+
+def test_parser_accepts_dm_strings_preset():
+    diagnostic = _load_hmi_manual_diagnostic()
+    args = diagnostic.build_parser().parse_args(
+        ["dm-strings", "--preset", "hmi-names", "--limit", "5"]
+    )
+
+    assert args.preset == "hmi-names"
+    assert args.limit == 5
 
 
 def test_format_plc_snapshot_summarizes_target_section():

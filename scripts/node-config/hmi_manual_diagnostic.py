@@ -80,6 +80,20 @@ WIDE_PROFILES: dict[str, tuple[tuple[str, str, int, int], ...]] = {
     "exhaustive": WIDE_EXHAUSTIVE_RANGES,
 }
 
+KNOWN_VOLATILE_RANGES: tuple[tuple[str, int, int, str], ...] = (
+    ("A", 0, 2, "auxiliary system counters seen changing every sample"),
+    ("A", 262, 266, "PLC cycle-time diagnostics"),
+    ("A", 351, 353, "AR PLC clock"),
+    ("D", 500, 520, "DM PLC/display clock"),
+    ("W", 0, 0, "oscillator flags; W0.01=fsdecseg in Tabla_ES.html"),
+)
+
+DM_STRING_PRESETS: dict[str, tuple[int, int, int, int]] = {
+    # Tabla_ES.html: STRING slots from D1010 through D3620, spaced every 10 words.
+    # D1008/D1009 and D3630..D3651 are INTs, not strings.
+    "hmi-names": (1010, 262, 10, 5),
+}
+
 
 def _valid_section(value: str) -> int:
     section = int(value)
@@ -454,6 +468,41 @@ def format_word_change(address: str, old: int, new: int) -> str:
     )
 
 
+def _split_address(address: str) -> tuple[str, int]:
+    for idx, char in enumerate(address):
+        if char.isdigit():
+            return address[:idx], int(address[idx:])
+    raise ValueError(f"direccion sin indice numerico: {address}")
+
+
+def is_known_volatile_address(address: str) -> bool:
+    prefix, index = _split_address(address)
+    return any(
+        prefix == volatile_prefix and start <= index <= end
+        for volatile_prefix, start, end, _reason in KNOWN_VOLATILE_RANGES
+    )
+
+
+def filter_known_volatiles(snapshot: dict[str, int]) -> dict[str, int]:
+    return {
+        address: value
+        for address, value in snapshot.items()
+        if not is_known_volatile_address(address)
+    }
+
+
+def decode_ascii_words(raw_words: list[int]) -> str:
+    data = bytearray()
+    for word in raw_words:
+        data.append((word >> 8) & 0xFF)
+        data.append(word & 0xFF)
+    return bytes(data).split(b"\x00", 1)[0].decode("latin-1", errors="replace").rstrip()
+
+
+def format_raw_words(raw_words: list[int]) -> str:
+    return "[" + ", ".join(f"0x{word & 0xFFFF:04X}" for word in raw_words) + "]"
+
+
 def _hmi_diff_lines(label: str, old: dict[str, Any] | None, new: dict[str, Any] | None) -> list[str]:
     if old is None and new is None:
         return []
@@ -710,6 +759,12 @@ def wide_plc(args: argparse.Namespace) -> int:
         f"wide-plc read-only: profile={args.profile} {len(ranges)} rangos, "
         f"{total_words} words por muestra, interval={args.interval_seconds}s"
     )
+    if not args.show_known_volatile:
+        ignored = ", ".join(
+            f"{prefix}{start}..{prefix}{end}"
+            for prefix, start, end, _reason in KNOWN_VOLATILE_RANGES
+        )
+        print(f"known volatile suppressed in output: {ignored}")
     with FINSClient() as client:
         previous_snapshot = None
         for sample in range(args.samples):
@@ -719,22 +774,74 @@ def wide_plc(args: argparse.Namespace) -> int:
                     include_volatile=args.include_volatile,
                     profile=args.profile,
                 )
-                output = format_wide_diff(previous_snapshot, snapshot, limit=args.limit)
+                visible_snapshot = (
+                    snapshot if args.show_known_volatile else filter_known_volatiles(snapshot)
+                )
+                output = format_wide_diff(previous_snapshot, visible_snapshot, limit=args.limit)
                 if (
                     not output
                     and args.status_every > 0
                     and (sample + 1) % args.status_every == 0
                 ):
-                    output = format_wide_status(snapshot, limit=args.status_limit)
+                    output = format_wide_status(visible_snapshot, limit=args.status_limit)
                 if output:
                     print(f"--- sample {sample + 1}/{args.samples} ---")
                     print(output)
-                previous_snapshot = snapshot
+                previous_snapshot = visible_snapshot
             except (FINSError, OSError, RuntimeError, ValueError) as exc:
                 print(f"--- sample {sample + 1}/{args.samples} ---")
                 print(f"ERROR: {exc}")
             if sample < args.samples - 1:
                 time.sleep(args.interval_seconds)
+    return 0
+
+
+def dm_strings(args: argparse.Namespace) -> int:
+    from fins.client import FINSClient
+
+    preset = DM_STRING_PRESETS.get(args.preset) if args.preset else None
+    start = args.start
+    items = args.items
+    stride = args.stride
+    words_per_string = args.words_per_string
+    if preset and start is None and items is None:
+        start, items, stride, words_per_string = preset
+    if start is None or items is None:
+        raise SystemExit("dm-strings requiere --preset o --start y --items")
+    if items < 1:
+        raise SystemExit("--items debe ser >= 1")
+    if words_per_string < 1:
+        raise SystemExit("--words-per-string debe ser >= 1")
+    if stride < words_per_string:
+        raise SystemExit("--stride debe ser >= --words-per-string")
+    if args.limit is not None and args.limit < 1:
+        raise SystemExit("--limit debe ser >= 1")
+
+    _validate_fins_config(args.local_port)
+    total_words = (items - 1) * stride + words_per_string
+    with FINSClient() as client:
+        raw = _read_words_chunked(client, "DM", start, total_words)
+
+    print(
+        f"dm-strings read-only: start=D{start} items={items} stride={stride} "
+        f"words_per_string={words_per_string}"
+    )
+    print("idx | address | text | raw")
+    printed = 0
+    for index in range(items):
+        offset = index * stride
+        raw_words = raw[offset: offset + words_per_string]
+        text_value = decode_ascii_words(raw_words)
+        if not text_value and not args.include_empty:
+            continue
+        print(
+            f"{index + 1} | D{start + offset} | "
+            f"{text_value or '-'} | {format_raw_words(raw_words)}"
+        )
+        printed += 1
+        if args.limit is not None and printed >= args.limit:
+            print(f"... strings truncados a --limit {args.limit}")
+            break
     return 0
 
 
@@ -886,6 +993,7 @@ def build_parser() -> argparse.ArgumentParser:
     wide_parser.add_argument("--status-every", type=int, default=5)
     wide_parser.add_argument("--status-limit", type=int, default=20)
     wide_parser.add_argument("--include-volatile", action="store_true")
+    wide_parser.add_argument("--show-known-volatile", action="store_true")
     wide_parser.add_argument(
         "--profile",
         choices=sorted(WIDE_PROFILES),
@@ -896,6 +1004,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     wide_parser.set_defaults(func=wide_plc)
+
+    strings_parser = subparsers.add_parser("dm-strings")
+    strings_parser.add_argument("--preset", choices=sorted(DM_STRING_PRESETS))
+    strings_parser.add_argument("--start", type=int)
+    strings_parser.add_argument("--items", type=int)
+    strings_parser.add_argument("--stride", type=int, default=10)
+    strings_parser.add_argument("--words-per-string", type=int, default=5)
+    strings_parser.add_argument("--local-port", type=int)
+    strings_parser.add_argument("--include-empty", action="store_true")
+    strings_parser.add_argument("--limit", type=int)
+    strings_parser.set_defaults(func=dm_strings)
 
     db_parser = subparsers.add_parser("inspect-db")
     db_parser.add_argument("--limit", type=int, default=10)
