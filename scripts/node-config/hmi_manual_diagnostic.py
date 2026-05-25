@@ -69,11 +69,24 @@ WIDE_EXHAUSTIVE_RANGES: tuple[tuple[str, str, int, int], ...] = (
     ("DM", "D", 0, 32768),
 )
 
+BURST_TRACE_RANGES: tuple[tuple[str, str, int, int], ...] = (
+    ("HR", "H", 0, 43),
+    ("WR", "W", 0, 14),
+    ("WR", "W", 25, 1),
+    ("WR", "W", 400, 4),
+    ("CIO", "CIO", 0, 129),
+    ("DM", "D", 100, 17),
+    ("DM", "D", 1008, 2),
+    ("DM", "D", 3630, 2),
+)
+
 WIDE_VOLATILE_RANGES: tuple[tuple[str, str, int, int], ...] = (
     ("DM", "D", 500, 21),
     ("AR", "A", 262, 3),
     ("AR", "A", 351, 3),
 )
+
+MIN_BURST_INTERVAL_MS = 100.0
 
 WIDE_PROFILES: dict[str, tuple[tuple[str, str, int, int], ...]] = {
     "standard": WIDE_TRACE_RANGES,
@@ -675,6 +688,18 @@ def _read_words_chunked(client, area: str, start: int, count: int) -> list[int]:
     return values
 
 
+def read_range_snapshot(
+    client,
+    ranges: tuple[tuple[str, str, int, int], ...],
+) -> dict[str, int]:
+    snapshot: dict[str, int] = {}
+    for area, prefix, start, count in ranges:
+        values = _read_words_chunked(client, area, start, count)
+        for offset, value in enumerate(values):
+            snapshot[f"{prefix}{start + offset}"] = value
+    return snapshot
+
+
 def _wide_ranges(
     include_volatile: bool,
     profile: str = "standard",
@@ -690,12 +715,7 @@ def read_wide_snapshot(
     include_volatile: bool = False,
     profile: str = "standard",
 ) -> dict[str, int]:
-    snapshot: dict[str, int] = {}
-    for area, prefix, start, count in _wide_ranges(include_volatile, profile):
-        values = _read_words_chunked(client, area, start, count)
-        for offset, value in enumerate(values):
-            snapshot[f"{prefix}{start + offset}"] = value
-    return snapshot
+    return read_range_snapshot(client, _wide_ranges(include_volatile, profile))
 
 
 def _changed_words(previous: dict[str, int], current: dict[str, int]) -> list[tuple[str, int, int]]:
@@ -793,6 +813,80 @@ def wide_plc(args: argparse.Namespace) -> int:
                 print(f"ERROR: {exc}")
             if sample < args.samples - 1:
                 time.sleep(args.interval_seconds)
+    return 0
+
+
+def burst_plc(args: argparse.Namespace) -> int:
+    from fins.client import FINSClient
+    from fins.frame import FINSError
+
+    if args.duration_seconds <= 0:
+        raise SystemExit("--duration-seconds debe ser > 0")
+    if args.interval_ms < MIN_BURST_INTERVAL_MS:
+        raise SystemExit(f"--interval-ms no puede bajar de {MIN_BURST_INTERVAL_MS:.0f}")
+    if args.limit < 1:
+        raise SystemExit("--limit debe ser >= 1")
+    if args.cio_words < 1:
+        raise SystemExit("--cio-words debe ser >= 1")
+    if args.cio_start < 0:
+        raise SystemExit("--cio-start debe ser >= 0")
+
+    _validate_fins_config(args.local_port)
+    ranges = tuple(
+        (area, prefix, args.cio_start, args.cio_words)
+        if area == "CIO" and prefix == "CIO"
+        else (area, prefix, start, count)
+        for area, prefix, start, count in BURST_TRACE_RANGES
+    )
+    total_words = sum(count for _, _, _, count in ranges)
+    interval_seconds = args.interval_ms / 1000.0
+    print(
+        f"burst-plc read-only: {len(ranges)} rangos, {total_words} words por muestra, "
+        f"duration={args.duration_seconds}s interval={interval_seconds:.3f}s"
+    )
+    if not args.show_known_volatile:
+        ignored = ", ".join(
+            f"{prefix}{start}..{prefix}{end}"
+            for prefix, start, end, _reason in KNOWN_VOLATILE_RANGES
+        )
+        print(f"known volatile suppressed in output: {ignored}")
+    print("accion esperada: ejecutar OFF -> ON -> OFF manual en HMI mientras corre esta traza")
+
+    with FINSClient() as client:
+        previous_snapshot = None
+        started = time.monotonic()
+        next_status = started + args.status_every_seconds
+        sample = 0
+        while True:
+            now = time.monotonic()
+            if sample > 0 and now - started >= args.duration_seconds:
+                break
+            sample += 1
+            try:
+                snapshot = read_range_snapshot(client, ranges)
+                visible_snapshot = (
+                    snapshot if args.show_known_volatile else filter_known_volatiles(snapshot)
+                )
+                output = format_wide_diff(previous_snapshot, visible_snapshot, limit=args.limit)
+                now = time.monotonic()
+                if (
+                    not output
+                    and args.status_every_seconds > 0
+                    and now >= next_status
+                ):
+                    output = format_wide_status(visible_snapshot, limit=args.status_limit)
+                    next_status = now + args.status_every_seconds
+                if output:
+                    print(f"--- t=+{now - started:.3f}s sample={sample} ---")
+                    print(output)
+                previous_snapshot = visible_snapshot
+            except (FINSError, OSError, RuntimeError, ValueError) as exc:
+                now = time.monotonic()
+                print(f"--- t=+{now - started:.3f}s sample={sample} ---")
+                print(f"ERROR: {exc}")
+            sleep_for = started + sample * interval_seconds - time.monotonic()
+            if sleep_for > 0:
+                time.sleep(sleep_for)
     return 0
 
 
@@ -1004,6 +1098,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     wide_parser.set_defaults(func=wide_plc)
+
+    burst_parser = subparsers.add_parser("burst-plc")
+    burst_parser.add_argument("--duration-seconds", type=float, default=30.0)
+    burst_parser.add_argument("--interval-ms", type=float, default=100.0)
+    burst_parser.add_argument("--local-port", type=int)
+    burst_parser.add_argument("--limit", type=int, default=120)
+    burst_parser.add_argument("--status-every-seconds", type=float, default=5.0)
+    burst_parser.add_argument("--status-limit", type=int, default=20)
+    burst_parser.add_argument("--show-known-volatile", action="store_true")
+    burst_parser.add_argument("--cio-start", type=int, default=0)
+    burst_parser.add_argument("--cio-words", type=int, default=129)
+    burst_parser.set_defaults(func=burst_plc)
 
     strings_parser = subparsers.add_parser("dm-strings")
     strings_parser.add_argument("--preset", choices=sorted(DM_STRING_PRESETS))

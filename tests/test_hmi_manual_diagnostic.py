@@ -226,6 +226,17 @@ def test_exhaustive_wide_plc_profile_expands_core_memory_areas():
     assert ("HR", "H", 0, 512) in ranges
 
 
+def test_burst_ranges_focus_on_hmi_outputs_and_initial_cio():
+    diagnostic = _load_hmi_manual_diagnostic()
+
+    assert ("HR", "H", 0, 43) in diagnostic.BURST_TRACE_RANGES
+    assert ("WR", "W", 0, 14) in diagnostic.BURST_TRACE_RANGES
+    assert ("WR", "W", 400, 4) in diagnostic.BURST_TRACE_RANGES
+    assert ("CIO", "CIO", 0, 129) in diagnostic.BURST_TRACE_RANGES
+    assert ("DM", "D", 1008, 2) in diagnostic.BURST_TRACE_RANGES
+    assert ("DM", "D", 3630, 2) in diagnostic.BURST_TRACE_RANGES
+
+
 def test_parser_accepts_full_diff_mode():
     diagnostic = _load_hmi_manual_diagnostic()
     args = diagnostic.build_parser().parse_args(
@@ -234,6 +245,31 @@ def test_parser_accepts_full_diff_mode():
 
     assert args.full is True
     assert args.diff is True
+
+
+def test_parser_accepts_burst_plc_mode():
+    diagnostic = _load_hmi_manual_diagnostic()
+    args = diagnostic.build_parser().parse_args(
+        [
+            "burst-plc",
+            "--duration-seconds",
+            "20",
+            "--interval-ms",
+            "100",
+            "--local-port",
+            "9600",
+            "--cio-start",
+            "0",
+            "--cio-words",
+            "256",
+        ]
+    )
+
+    assert args.duration_seconds == 20
+    assert args.interval_ms == 100
+    assert args.local_port == 9600
+    assert args.cio_start == 0
+    assert args.cio_words == 256
 
 
 def test_parser_accepts_dm_strings_preset():
