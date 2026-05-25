@@ -89,7 +89,7 @@ def db_liveness(args) -> int:
         if count < 1:
             raise SystemExit("tabla ciclo vacia")
 
-        first, _first_ts, first_age = _latest(conn)
+        first, first_ts, first_age = _latest(conn)
         print(
             f"sample1 id={first['id']} ts={first['timestamp']} "
             f"age_s={first_age:.0f} wait_s={sample_wait_seconds}"
