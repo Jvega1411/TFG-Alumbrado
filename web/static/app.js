@@ -20,7 +20,7 @@ const ICON_WARN = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none" s
 
 const SKELETON = `<div class="skeleton-panel"></div><div class="skeleton-panel"></div><div class="skeleton-panel"></div>`;
 
-const STALE_WARN_FALLBACK_S = 30;
+const STALE_WARN_FALLBACK_S = 3600;
 const STALE_CRIT_S = 86400;  // 24h → aviso rojo
 const REFRESH_INTERVALS = { estado: 3000, secciones: 5000 };
 

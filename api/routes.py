@@ -34,7 +34,7 @@ _engine = None
 router = APIRouter()
 
 SECTION_COUNT = 112
-STALE_AFTER_SECONDS = 30
+STALE_AFTER_SECONDS = 3600
 
 
 def init_engine(engine) -> None:

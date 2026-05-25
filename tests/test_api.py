@@ -58,7 +58,7 @@ def test_dashboard_resumen_counts_operational_truth(api_client):
     assert data["secciones"]["activas"] == 1
     assert data["secciones"]["apagadas"] == 111
     assert data["bloques"]["hmi_original"]["status"] == "ok"
-    assert data["frescura"]["stale_after_seconds"] == 30
+    assert data["frescura"]["stale_after_seconds"] == 3600
 
 
 def test_secciones_actual_uses_v2_names(api_client):
