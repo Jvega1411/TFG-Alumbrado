@@ -222,9 +222,11 @@ def format_plc_snapshot(snapshot: dict[str, Any], *, show_raw: bool = False) -> 
     return "\n".join(lines)
 
 
-def _validate_fins_config() -> None:
+def _validate_fins_config(local_port: int | None = None) -> None:
     from config.settings import Config
 
+    if local_port is not None:
+        Config.UDP_LOCAL_PORT = local_port
     Config.validate()
     if not Config.UDP_LOCAL_HOST.strip():
         raise SystemExit("UDP_LOCAL_HOST debe estar configurado para leer FINS")
@@ -242,7 +244,7 @@ def poll_plc(args: argparse.Namespace) -> int:
     if args.samples > 1 and args.interval_seconds < 2.0:
         raise SystemExit("--interval-seconds no puede bajar de 2.0 contra PLC real")
 
-    _validate_fins_config()
+    _validate_fins_config(args.local_port)
     with FINSClient() as client:
         for sample in range(args.samples):
             h10_raw = words(client.read_h_range(HMI_H_WORD, 1))[0]
@@ -402,6 +404,7 @@ def build_parser() -> argparse.ArgumentParser:
     poll_parser.add_argument("--section", type=_valid_section)
     poll_parser.add_argument("--samples", type=int, default=1)
     poll_parser.add_argument("--interval-seconds", type=float, default=2.0)
+    poll_parser.add_argument("--local-port", type=int)
     poll_parser.add_argument("--json", action="store_true")
     poll_parser.add_argument("--raw", action="store_true")
     poll_parser.set_defaults(func=poll_plc)

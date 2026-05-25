@@ -51,6 +51,15 @@ def test_parser_rejects_sub_2s_repeated_plc_sampling():
         raise AssertionError("poll_plc should reject repeated sampling below 2s")
 
 
+def test_parser_accepts_poll_plc_local_port_override():
+    diagnostic = _load_hmi_manual_diagnostic()
+    args = diagnostic.build_parser().parse_args(
+        ["poll-plc", "--samples", "1", "--local-port", "9601"]
+    )
+
+    assert args.local_port == 9601
+
+
 def test_format_plc_snapshot_summarizes_target_section():
     diagnostic = _load_hmi_manual_diagnostic()
     h_raw = [0] * 21
