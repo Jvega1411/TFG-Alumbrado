@@ -1,0 +1,88 @@
+Bloques de función
+fb_Horario_2t
+hora_actual:=  (int_to_dint(horplc)*3600)+(int_to_dint(minplc)*60);
+
+horarios_inicio_1:= (int_to_dint(horarios.HORA_INICIO_1)*3600)+(INT_TO_DINT(horarios.MINUTO_INICIO_1)*60);
+horarios_fin_1:= (int_to_dint(horarios.HORA_FIN_1)*3600)+(INT_TO_DINT(horarios.MINUTO_FIN_1)*60);
+
+horarios_inicio_2:= (int_to_dint(horarios.HORA_INICIO_2)*3600)+(INT_TO_DINT(horarios.MINUTO_INICIO_2)*60);
+horarios_fin_2:= (int_to_dint(horarios.HORA_FIN_2)*3600)+(INT_TO_DINT(horarios.MINUTO_FIN_2)*60);
+
+horario_activo:= FALSE;
+
+IF (horarios_inicio_1<>horarios_fin_1) THEN
+	IF (horarios_fin_1>=horarios_inicio_1) THEN
+		IF (hora_actual>=horarios_inicio_1) AND (hora_actual<horarios_fin_1) THEN
+			horario_activo:= TRUE;
+		END_IF;
+	ELSE
+		IF (hora_actual>=horarios_inicio_1) OR (hora_actual<horarios_fin_1) THEN
+			horario_activo:= TRUE;
+		END_IF;
+	END_IF;
+END_IF;
+IF (horarios_inicio_2<>horarios_fin_2) THEN
+	IF (horarios_fin_2>=horarios_inicio_2) THEN
+		IF (hora_actual>=horarios_inicio_2) AND (hora_actual<horarios_fin_2) THEN
+			horario_activo:= TRUE;
+		END_IF;
+	ELSE
+		IF (hora_actual>=horarios_inicio_2) OR (hora_actual<horarios_fin_2) THEN
+			horario_activo:= TRUE;
+		END_IF;
+	END_IF;
+END_IF;
+
+fbarranques
+IF horario_activo AND (NOT P_First_Cycle) THEN
+	IF (c<=111) THEN
+		array_arranques[c]:= TRUE;
+		IF fsseg THEN
+			temporizador:= temporizador+1;
+		END_IF;
+		IF(temporizador>=retardo_sg) THEN
+			c:= c+1;
+			temporizador:= 0;
+		END_IF;
+	END_IF;
+ELSE
+	FOR c:= 0 TO 111 DO
+		array_arranques[c]:= FALSE;
+	END_FOR;
+	c:= 0;
+	temporizador:= 0;
+END_IF;
+
+
+fbcircuito_alumbrado_nave
+FOR c:= 0 TO 9 DO
+	buffer_salidas_alumbrado[c]:= 0;	
+END_FOR;
+FOR m:= 0 TO 99 DO
+	memoria_activacion_circuito:= manuales[m];
+	IF memoria_activacion_circuito THEN
+			buffer_salidas_alumbrado[0]:= buffer_salidas_alumbrado[0] OR maquinas_planta[m].word_0;
+			buffer_salidas_alumbrado[1]:= buffer_salidas_alumbrado[1] OR maquinas_planta[m].word_1;
+			buffer_salidas_alumbrado[2]:= buffer_salidas_alumbrado[2] OR maquinas_planta[m].word_2;
+			buffer_salidas_alumbrado[3]:= buffer_salidas_alumbrado[3] OR maquinas_planta[m].word_3;
+			buffer_salidas_alumbrado[4]:= buffer_salidas_alumbrado[4] OR maquinas_planta[m].word_4;
+			buffer_salidas_alumbrado[5]:= buffer_salidas_alumbrado[5] OR maquinas_planta[m].word_5;
+			buffer_salidas_alumbrado[6]:= buffer_salidas_alumbrado[6] OR maquinas_planta[m].word_6;
+			buffer_salidas_alumbrado[7]:= buffer_salidas_alumbrado[7] OR maquinas_planta[m].word_7;
+			buffer_salidas_alumbrado[8]:= buffer_salidas_alumbrado[8] OR maquinas_planta[m].word_8;
+			buffer_salidas_alumbrado[9]:= buffer_salidas_alumbrado[9] OR maquinas_planta[m].word_9;
+	END_IF;
+END_FOR;
+
+IF (m>=100) THEN
+	salidas_alumbrado[0]:= buffer_salidas_alumbrado[0];
+	salidas_alumbrado[1]:= buffer_salidas_alumbrado[1];
+	salidas_alumbrado[2]:= buffer_salidas_alumbrado[2];
+	salidas_alumbrado[3]:= buffer_salidas_alumbrado[3];
+	salidas_alumbrado[4]:= buffer_salidas_alumbrado[4];
+	salidas_alumbrado[5]:= buffer_salidas_alumbrado[5];
+	salidas_alumbrado[6]:= buffer_salidas_alumbrado[6];
+	salidas_alumbrado[7]:= buffer_salidas_alumbrado[7];
+	salidas_alumbrado[8]:= buffer_salidas_alumbrado[8];
+	salidas_alumbrado[9]:= buffer_salidas_alumbrado[9];
+END_IF;
