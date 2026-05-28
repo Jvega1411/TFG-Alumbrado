@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# rpi-cx-maintenance-close.sh - Cerrar ventana temporal CX Programmer Lenovo -> PLC.
+# rpi-cx-maintenance-close.sh - Close LEGACY CX Programmer NAT diagnostic path.
 #
 # Ejecutar manualmente en la RPi, como root/sudo.
 # Elimina solo reglas marcadas como alumbrado-cx-maintenance y desactiva forwarding.

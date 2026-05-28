@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# rpi-cx-maintenance-open.sh - Abrir ventana temporal CX Programmer Lenovo -> PLC.
+# rpi-cx-maintenance-open.sh - LEGACY diagnostic NAT path for CX Programmer.
 #
 # Ejecutar manualmente en la RPi, como root/sudo, solo durante mantenimiento OT.
 # No persiste cambios tras reinicio. Cerrar siempre con rpi-cx-maintenance-close.sh.
+# No es el camino CX-One preferido: usar rpi-cx-proxyarp-open.sh.
 #
 # Ejemplo:
 #   sudo OT_IF=eth0 LENOVO_IF=enx6083e7ac98fb \

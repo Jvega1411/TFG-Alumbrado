@@ -1,4 +1,4 @@
-# lenovo-cx-route-close.ps1 - Eliminar ruta temporal Lenovo -> red PLC.
+# lenovo-cx-route-close.ps1 - Close LEGACY CX Programmer NAT diagnostic route.
 # Ejecutar manualmente en Lenovo como administrador.
 
 param(

@@ -1,5 +1,6 @@
-# lenovo-cx-route-open.ps1 - Ruta temporal Lenovo -> red PLC para CX Programmer.
+# lenovo-cx-route-open.ps1 - LEGACY diagnostic route for CX Programmer NAT path.
 # Ejecutar manualmente en Lenovo como administrador. No usa -Persistent.
+# No es el camino CX-One preferido: usar lenovo-cx-proxyarp-open.ps1.
 
 param(
     [string]$PlcPrefix = "192.168.250.0/24",
