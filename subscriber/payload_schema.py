@@ -56,6 +56,22 @@ def _modo_label(modfunalu: int) -> str:
     }.get(modfunalu, "desconocido")
 
 
+def _get_bit(word: int, bit: int) -> bool:
+    return bool((word >> bit) & 0x0001)
+
+
+def _decode_i32_low_high(low: int, high: int) -> int:
+    value = (low & 0xFFFF) | ((high & 0xFFFF) << 16)
+    if value & 0x80000000:
+        value -= 0x100000000
+    return value
+
+
+def _require_match(label: str, actual, expected) -> None:
+    if actual != expected:
+        raise ValueError(f"contexto_plc_raw {label} no coincide con payload semantico")
+
+
 class ReadBlockStatus(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -450,6 +466,91 @@ class LecturaPayload(BaseModel):
             ids = sorted(row.id for row in self.vector_salidas_logicas.bits)
             if ids != list(range(1, 161)):
                 raise ValueError("vector_salidas_logicas ok requiere ids 1..160")
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_contexto_raw_matches_semantics(self) -> "LecturaPayload":
+        def ok(block: str) -> bool:
+            return self.read_status[block].status == "ok"
+
+        if not ok("contexto_plc_raw") or self.contexto_plc_raw is None:
+            return self
+
+        ranges = {row.source_range: row.raw_words for row in self.contexto_plc_raw.ranges}
+
+        if ok("fotocelula") and self.fotocelula is not None:
+            w25 = ranges["W25"][0]
+            h100 = ranges["H100"][0]
+            d100 = ranges["D100-D116"]
+            foto_dm = d100[8:16]
+            _require_match("W25.00", _get_bit(w25, 0), self.fotocelula.entrada_raw)
+            _require_match("H100.00", _get_bit(h100, 0), self.fotocelula.mem_fun)
+            _require_match("H100.01", _get_bit(h100, 1), self.fotocelula.filtrada_activa)
+            _require_match(
+                "D100-D116[8:16] temporizador_activacion_s",
+                _decode_i32_low_high(foto_dm[0], foto_dm[1]),
+                self.fotocelula.temporizador_activacion_s,
+            )
+            _require_match(
+                "D100-D116[8:16] temporizador_desactivacion_s",
+                _decode_i32_low_high(foto_dm[2], foto_dm[3]),
+                self.fotocelula.temporizador_desactivacion_s,
+            )
+            _require_match(
+                "D100-D116[8:16] retardo_activacion_s",
+                _decode_i32_low_high(foto_dm[4], foto_dm[5]),
+                self.fotocelula.retardo_activacion_s,
+            )
+            _require_match(
+                "D100-D116[8:16] retardo_desactivacion_s",
+                _decode_i32_low_high(foto_dm[6], foto_dm[7]),
+                self.fotocelula.retardo_desactivacion_s,
+            )
+
+        if ok("reset_temporizado") and self.reset_temporizado is not None:
+            w1 = ranges["W1"][0]
+            reset_dm = ranges["D100-D116"][2:8]
+            _require_match("W1 raw", w1, self.reset_temporizado.w1_raw)
+            _require_match(
+                "W1.01",
+                _get_bit(w1, 1),
+                self.reset_temporizado.horario_global_activo,
+            )
+            _require_match("W1.02", _get_bit(w1, 2), self.reset_temporizado.reset.activo)
+            _require_match("D100-D116[2:8]", reset_dm, self.reset_temporizado.dm_raw_words)
+
+        if ok("modo") and self.modo is not None:
+            _require_match("D100-D116[16]", ranges["D100-D116"][16], self.modo.modfunalu)
+
+        if ok("reloj") and self.plc_reloj is not None:
+            _require_match("D500-D506", ranges["D500-D506"], self.plc_reloj.raw_words)
+
+        if ok("vector_salidas_logicas") and self.vector_salidas_logicas is not None:
+            _require_match(
+                "W4-W13",
+                ranges["W4-W13"],
+                self.vector_salidas_logicas.raw_words,
+            )
+
+        if ok("hmi_original") and self.hmi_original is not None:
+            _require_match("H0-H42[10]", ranges["H0-H42"][10], self.hmi_original.h10_raw)
+            _require_match(
+                "D1008-D1009",
+                ranges["D1008-D1009"],
+                [self.hmi_original.indice_seccion, self.hmi_original.indice_anterior],
+            )
+
+        if ok("reloj_ar") and self.reloj_ar is not None:
+            _require_match(
+                "A351-A353",
+                ranges["A351-A353"],
+                [
+                    self.reloj_ar.raw.A351_minsegplc,
+                    self.reloj_ar.raw.A352_diahorplc,
+                    self.reloj_ar.raw.A353_anomesplc,
+                ],
+            )
 
         return self
 

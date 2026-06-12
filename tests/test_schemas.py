@@ -97,7 +97,7 @@ def test_vector_salidas_logicas_response_shape():
             }
         ],
     )
-    assert resp.bits[0]["source"] == "W4.00"
+    assert resp.bits[0].source == "W4.00"
 
 
 def test_contexto_plc_raw_response_shape():
@@ -105,4 +105,4 @@ def test_contexto_plc_raw_response_shape():
         ciclo_id=10,
         ranges=[{"area": "H", "source_range": "H0-H42", "raw_words": [0] * 43}],
     )
-    assert resp.ranges[0]["source_range"] == "H0-H42"
+    assert resp.ranges[0].source_range == "H0-H42"

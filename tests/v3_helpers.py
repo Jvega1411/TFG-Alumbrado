@@ -45,7 +45,7 @@ def sample_contexto_plc_raw() -> dict:
             {
                 "area": "H",
                 "source_range": "H100",
-                "raw_words": [0x0002],
+                "raw_words": [0x0000],
             },
             {
                 "area": "W",
@@ -60,12 +60,12 @@ def sample_contexto_plc_raw() -> dict:
             {
                 "area": "W",
                 "source_range": "W25",
-                "raw_words": [0x0001],
+                "raw_words": [0x0000],
             },
             {
                 "area": "D",
                 "source_range": "D100-D116",
-                "raw_words": [0] * 17,
+                "raw_words": [0, 0, 1800, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 0, 10, 0, 0],
             },
             {
                 "area": "D",

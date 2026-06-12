@@ -153,16 +153,30 @@ class DashboardResumenResponse(BaseModel):
     capabilities: DashboardCapabilitiesResponse
 
 
+class VectorSalidaLogicaBitResponse(BaseModel):
+    id: int
+    word: str
+    bit: int
+    source: str
+    activa: bool
+
+
 class VectorSalidasLogicasResponse(BaseModel):
     ciclo_id: int
     source_range: str
     raw_words: List[int]
-    bits: List[dict]
+    bits: List[VectorSalidaLogicaBitResponse]
+
+
+class ContextoPlcRawRangeResponse(BaseModel):
+    area: str
+    source_range: str
+    raw_words: List[int]
 
 
 class ContextoPlcRawResponse(BaseModel):
     ciclo_id: int
-    ranges: List[dict]
+    ranges: List[ContextoPlcRawRangeResponse]
 
 
 class FotocelulaResponse(BaseModel):

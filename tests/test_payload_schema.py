@@ -6,6 +6,17 @@ from subscriber.payload_schema import parse_payload
 from tests.v3_helpers import sample_payload_bytes, sample_payload_dict
 
 
+def _raw_range(data: dict, source_range: str) -> list[int]:
+    for row in data["contexto_plc_raw"]["ranges"]:
+        if row["source_range"] == source_range:
+            return row["raw_words"]
+    raise AssertionError(f"missing raw range {source_range}")
+
+
+def _parse_dict(data: dict):
+    return parse_payload(json.dumps(data).encode("utf-8"))
+
+
 def test_accepts_valid_v3_payload():
     payload = parse_payload(sample_payload_bytes())
     assert payload.schema_version == 3
@@ -111,6 +122,86 @@ def test_rejects_context_raw_range_purpose():
     data["contexto_plc_raw"]["ranges"][0]["purpose"] = "not_plc_raw"
     with pytest.raises(ValueError, match="purpose"):
         parse_payload(json.dumps(data).encode("utf-8"))
+
+
+def test_rejects_context_w25_fotocelula_mismatch():
+    data = sample_payload_dict()
+    _raw_range(data, "W25")[0] = 0x0001
+    with pytest.raises(ValueError, match="W25.00"):
+        _parse_dict(data)
+
+
+@pytest.mark.parametrize(("raw_h100", "match"), [(0x0001, "H100.00"), (0x0002, "H100.01")])
+def test_rejects_context_h100_fotocelula_mismatch(raw_h100: int, match: str):
+    data = sample_payload_dict()
+    _raw_range(data, "H100")[0] = raw_h100
+    with pytest.raises(ValueError, match=match):
+        _parse_dict(data)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "match"),
+    [
+        (lambda data: _raw_range(data, "W1").__setitem__(0, 0x0000), "W1 raw"),
+        (lambda data: data["reset_temporizado"].__setitem__("horario_global_activo", True), "W1.01"),
+        (lambda data: data["reset_temporizado"]["reset"].__setitem__("activo", False), "W1.02"),
+    ],
+)
+def test_rejects_context_w1_reset_mismatch(mutate, match: str):
+    data = sample_payload_dict()
+    mutate(data)
+    with pytest.raises(ValueError, match=match):
+        _parse_dict(data)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "match"),
+    [
+        (lambda data: _raw_range(data, "D100-D116").__setitem__(2, 0), "D100-D116\\[2:8\\]"),
+        (lambda data: _raw_range(data, "D100-D116").__setitem__(12, 11), "retardo_activacion_s"),
+        (lambda data: _raw_range(data, "D100-D116").__setitem__(16, 1), "D100-D116\\[16\\]"),
+    ],
+)
+def test_rejects_context_d100_d116_mismatch(mutate, match: str):
+    data = sample_payload_dict()
+    mutate(data)
+    with pytest.raises(ValueError, match=match):
+        _parse_dict(data)
+
+
+def test_rejects_context_d500_d506_clock_mismatch():
+    data = sample_payload_dict()
+    _raw_range(data, "D500-D506")[0] = 1
+    with pytest.raises(ValueError, match="D500-D506"):
+        _parse_dict(data)
+
+
+def test_rejects_context_w4_w13_vector_mismatch():
+    data = sample_payload_dict()
+    _raw_range(data, "W4-W13")[0] = 0
+    with pytest.raises(ValueError, match="W4-W13"):
+        _parse_dict(data)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "match"),
+    [
+        (lambda data: _raw_range(data, "H0-H42").__setitem__(10, 0x1000), "H0-H42\\[10\\]"),
+        (lambda data: _raw_range(data, "D1008-D1009").__setitem__(0, 1), "D1008-D1009"),
+    ],
+)
+def test_rejects_context_hmi_mismatch(mutate, match: str):
+    data = sample_payload_dict()
+    mutate(data)
+    with pytest.raises(ValueError, match=match):
+        _parse_dict(data)
+
+
+def test_rejects_context_a351_a353_reloj_ar_mismatch():
+    data = sample_payload_dict()
+    _raw_range(data, "A351-A353")[0] = 0x3001
+    with pytest.raises(ValueError, match="A351-A353"):
+        _parse_dict(data)
 
 
 def test_rejects_naive_timestamp():
