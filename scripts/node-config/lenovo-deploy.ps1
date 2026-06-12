@@ -41,6 +41,11 @@ Write-Host "[PIP] Instalando dependencias..."
 New-Item -ItemType Directory -Force -Path "$dest\data" | Out-Null
 New-Item -ItemType Directory -Force -Path "$dest\logs" | Out-Null
 
+$dbPath = "$dest\data\bd_estados.db"
+if (Test-Path -LiteralPath $dbPath) {
+    Write-Warning "Existe $dbPath. V3 no migra SQLite V2 con create_all(). Antes de arrancar, hacer backup/clean break o una migracion autorizada."
+}
+
 Write-Host ""
 Write-Host "OK  Repo listo en $dest"
 Write-Host ">>> Siguiente: copiar lenovo-env-template.env a .env y editarlo"

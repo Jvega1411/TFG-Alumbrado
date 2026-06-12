@@ -10,7 +10,8 @@ param(
     [int]$MaxDataAgeSeconds = 420,
     [int]$MaxIngestAgeSeconds = 90,
     [int]$LivenessSampleWaitSeconds = 0,
-    [switch]$SkipNetwork
+    [switch]$SkipNetwork,
+    [switch]$RequireRemoteAccess
 )
 
 $ErrorActionPreference = "Stop"
@@ -156,9 +157,13 @@ if ($SkipNetwork) {
     }
 }
 
-Check "AnyDesk servicio activo" {
-    $svc = Get-Service -Name "AnyDesk" -ErrorAction SilentlyContinue
-    $svc -and $svc.Status -eq "Running"
+if ($RequireRemoteAccess) {
+    Check "AnyDesk servicio activo" {
+        $svc = Get-Service -Name "AnyDesk" -ErrorAction SilentlyContinue
+        $svc -and $svc.Status -eq "Running"
+    }
+} else {
+    Write-Host "SKIP AnyDesk servicio activo - acceso remoto opcional; use -RequireRemoteAccess para exigirlo"
 }
 
 Write-Host ""

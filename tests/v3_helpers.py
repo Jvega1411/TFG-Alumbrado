@@ -1,8 +1,8 @@
 import json
 from datetime import datetime, timezone
 
-from acquisition.decoders import decode_cercha_salidas, decode_schedule_tramos
-from schemas.blocks import READ_BLOCKS_V2
+from acquisition.decoders import decode_schedule_tramos, decode_vector_salidas_logicas
+from schemas.blocks import READ_BLOCKS_V3
 
 
 def make_words_bytes(words: list[int]) -> bytes:
@@ -30,32 +30,100 @@ def read_status(failed: set[str] | None = None) -> dict:
             if block in failed
             else {"status": "ok", "error": None}
         )
-        for block in READ_BLOCKS_V2
+        for block in READ_BLOCKS_V3
     }
 
 
-def sample_payload_dict(failed: set[str] | None = None, ts: str = "2026-05-12T08:30:00+00:00") -> dict:
+def sample_contexto_plc_raw() -> dict:
+    return {
+        "ranges": [
+            {
+                "area": "H",
+                "source_range": "H0-H42",
+                "raw_words": [0] * 43,
+            },
+            {
+                "area": "H",
+                "source_range": "H100",
+                "raw_words": [0x0002],
+            },
+            {
+                "area": "W",
+                "source_range": "W1",
+                "raw_words": [0x0004],
+            },
+            {
+                "area": "W",
+                "source_range": "W4-W13",
+                "raw_words": [0x0001] + [0] * 9,
+            },
+            {
+                "area": "W",
+                "source_range": "W25",
+                "raw_words": [0x0001],
+            },
+            {
+                "area": "D",
+                "source_range": "D100-D116",
+                "raw_words": [0] * 17,
+            },
+            {
+                "area": "D",
+                "source_range": "D500-D506",
+                "raw_words": [0, 30, 8, 12, 5, 26, 2],
+            },
+            {
+                "area": "D",
+                "source_range": "D1000-D1007",
+                "raw_words": [6, 0, 8, 0, 14, 0, 22, 0],
+            },
+            {
+                "area": "D",
+                "source_range": "D1008-D1009",
+                "raw_words": [0, 0],
+            },
+            {
+                "area": "D",
+                "source_range": "D3630-D3651",
+                "raw_words": [0] * 22,
+            },
+            {
+                "area": "A",
+                "source_range": "A351-A353",
+                "raw_words": [0x3000, 0x1208, 0x2605],
+            },
+            {
+                "area": "A",
+                "source_range": "A401-A402",
+                "raw_words": [0, 0],
+            },
+        ],
+    }
+
+
+def sample_payload_dict(
+    failed: set[str] | None = None,
+    ts: str = "2026-05-12T08:30:00+00:00",
+) -> dict:
     failed = failed or set()
-    status = read_status(failed)
     salidas_raw = [0x0001] + [0] * 9
-    cercha_salidas = decode_cercha_salidas(salidas_raw)
+    bits = decode_vector_salidas_logicas(salidas_raw)
     secciones = [
         {
             "id": i + 1,
             "automatico_calculado": False,
             "manual_activo": False,
             "salida_interna": False,
-            "salida_wr": cercha_salidas[i]["activa"] if "salidas_wr" not in failed else None,
         }
         for i in range(112)
     ]
     horarios_raw = [6, 0, 8, 0, 14, 0, 22, 0] + [0] * 20
     data = {
-        "schema_version": 2,
+        "schema_version": 3,
         "ts": ts,
         "fins_ok": not failed,
         "fins_error": None if not failed else "Bloques FINS fallidos: " + "; ".join(sorted(failed)),
-        "read_status": status,
+        "read_status": read_status(failed),
         "modo": {"modfunalu": 0, "modo_label": "horarios"},
         "fotocelula": {
             "entrada_raw": False,
@@ -113,11 +181,12 @@ def sample_payload_dict(failed: set[str] | None = None, ts: str = "2026-05-12T08
             "encoding": "bcd_packed_channel",
         },
         "secciones": secciones,
-        "salidas_wr": {
+        "vector_salidas_logicas": {
+            "source_range": "W4-W13",
             "raw_words": salidas_raw,
-            "cercha_salidas": cercha_salidas,
-            "physical_io_mapping_status": "pending_cio_map",
+            "bits": bits,
         },
+        "contexto_plc_raw": sample_contexto_plc_raw(),
     }
     for block in failed:
         if block == "secciones":
@@ -145,7 +214,8 @@ def sample_variables(failed: set[str] | None = None) -> dict:
         "reset_temporizado": data["reset_temporizado"],
         "hmi_original": data["hmi_original"],
         "reloj_ar": data["reloj_ar"],
-        "salidas_wr": data["salidas_wr"],
+        "vector_salidas_logicas": data["vector_salidas_logicas"],
+        "contexto_plc_raw": data["contexto_plc_raw"],
         "read_status": data["read_status"],
     }
 

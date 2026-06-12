@@ -9,23 +9,24 @@ from config.settings import Config
 from model.database import Base, create_db_engine
 from model.fase2 import (
     Ciclo,
+    ContextoPlcRawState,
     FotocelulaState,
     HmiOriginalState,
     HorarioTramo,
     RelojArState,
     ResetTemporizadoState,
-    SalidasWrState,
     SeccionEstado,
+    VectorSalidasLogicasState,
 )
 from model.json_columns import dump_json_column
-from schemas.blocks import READ_BLOCKS_V2
+from schemas.blocks import READ_BLOCKS_V3
 from subscriber.payload_schema import parse_payload
 
 logger = logging.getLogger(__name__)
 
 
 def process_message(payload_bytes: bytes, session: Session) -> None:
-    """Parse a MQTT v2 payload and write it to DB without stopping the loop."""
+    """Parse a MQTT v3 payload and write it to DB without stopping the loop."""
     try:
         payload = parse_payload(payload_bytes)
     except (ValueError, ValidationError) as exc:
@@ -50,7 +51,8 @@ def _write_to_db(payload, session: Session) -> None:
     _add_reset_temporizado(payload, session, ciclo)
     _add_hmi_original(payload, session, ciclo)
     _add_reloj_ar(payload, session, ciclo)
-    _add_salidas_wr(payload, session, ciclo)
+    _add_vector_salidas_logicas(payload, session, ciclo)
+    _add_contexto_plc_raw(payload, session, ciclo)
     session.commit()
 
 
@@ -67,11 +69,11 @@ def _add_ciclo(payload, session: Session) -> Ciclo:
         fins_error=payload.fins_error,
         **{
             f"{block}_status": payload.block_status(block)
-            for block in READ_BLOCKS_V2
+            for block in READ_BLOCKS_V3
         },
         **{
             f"{block}_error": payload.block_error(block)
-            for block in READ_BLOCKS_V2
+            for block in READ_BLOCKS_V3
         },
         modfunalu=modo.modfunalu if modo else None,
         modo_label=modo.modo_label if modo else None,
@@ -107,7 +109,6 @@ def _add_secciones(payload, session: Session, ciclo: Ciclo) -> None:
                     automatico_calculado=section.automatico_calculado,
                     manual_activo=section.manual_activo,
                     salida_interna=section.salida_interna,
-                    salida_wr=section.salida_wr,
                 )
             )
 
@@ -206,16 +207,26 @@ def _add_reloj_ar(payload, session: Session, ciclo: Ciclo) -> None:
         )
 
 
-def _add_salidas_wr(payload, session: Session, ciclo: Ciclo) -> None:
-    if payload.block_ok("salidas_wr"):
+def _add_vector_salidas_logicas(payload, session: Session, ciclo: Ciclo) -> None:
+    if payload.block_ok("vector_salidas_logicas"):
+        vector = payload.vector_salidas_logicas
         session.add(
-            SalidasWrState(
+            VectorSalidasLogicasState(
                 ciclo_id=ciclo.id,
-                raw_words=dump_json_column(payload.salidas_wr.raw_words),
-                cercha_salidas=dump_json_column(
-                    [row.model_dump() for row in payload.salidas_wr.cercha_salidas]
-                ),
-                physical_io_mapping_status=payload.salidas_wr.physical_io_mapping_status,
+                source_range=vector.source_range,
+                raw_words=dump_json_column(vector.raw_words),
+                bits=dump_json_column([row.model_dump() for row in vector.bits]),
+            )
+        )
+
+
+def _add_contexto_plc_raw(payload, session: Session, ciclo: Ciclo) -> None:
+    if payload.block_ok("contexto_plc_raw"):
+        context = payload.contexto_plc_raw
+        session.add(
+            ContextoPlcRawState(
+                ciclo_id=ciclo.id,
+                ranges=dump_json_column([row.model_dump() for row in context.ranges]),
             )
         )
 

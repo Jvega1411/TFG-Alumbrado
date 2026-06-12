@@ -6,27 +6,29 @@ from sqlalchemy.orm import Session
 
 from model.fase2 import (
     Ciclo,
+    ContextoPlcRawState,
     FotocelulaState,
     HmiOriginalState,
     HorarioTramo,
     RelojArState,
     ResetTemporizadoState,
-    SalidasWrState,
     SeccionEstado,
+    VectorSalidasLogicasState,
 )
 from model.json_columns import load_json_column
 from schemas.blocks import READ_BLOCKS
 from schemas.lectura import (
     CicloResponse,
+    ContextoPlcRawResponse,
     DashboardResumenResponse,
     FotocelulaResponse,
     HmiOriginalResponse,
     HorarioTramoResponse,
     RelojArResponse,
     ResetTemporizadoResponse,
-    SalidasWrResponse,
     SeccionEstadoResponse,
     SeccionHistorialResponse,
+    VectorSalidasLogicasResponse,
 )
 
 _engine = None
@@ -57,20 +59,12 @@ def _latest_ciclo(db: Session) -> Ciclo:
     return ciclo
 
 
-def _latest_valid_secciones(db: Session) -> List[SeccionEstado]:
-    ultimo_id = (
-        db.query(Ciclo.id)
-        .join(SeccionEstado, SeccionEstado.ciclo_id == Ciclo.id)
-        .filter(Ciclo.secciones_status == "ok")
-        .order_by(Ciclo.timestamp.desc(), Ciclo.id.desc())
-        .limit(1)
-        .scalar()
-    )
-    if ultimo_id is None:
+def _secciones_for_ciclo(db: Session, ciclo: Ciclo) -> List[SeccionEstado]:
+    if ciclo.secciones_status != "ok":
         return []
     return (
         db.query(SeccionEstado)
-        .filter(SeccionEstado.ciclo_id == ultimo_id)
+        .filter(SeccionEstado.ciclo_id == ciclo.id)
         .order_by(SeccionEstado.seccion_id)
         .all()
     )
@@ -103,31 +97,16 @@ def _section_counters(rows: List[SeccionEstado]) -> dict:
     automatico = sum(1 for row in rows if row.automatico_calculado)
     manual = sum(1 for row in rows if row.manual_activo)
     interna = sum(1 for row in rows if row.salida_interna)
-    wr = sum(1 for row in rows if row.salida_wr is True)
-    wr_sin_dato = sum(1 for row in rows if row.salida_wr is None)
-    activas = sum(
-        1
-        for row in rows
-        if row.automatico_calculado or row.manual_activo or row.salida_interna or row.salida_wr is True
-    )
-    apagadas = sum(
-        1
-        for row in rows
-        if not row.automatico_calculado
-        and not row.manual_activo
-        and not row.salida_interna
-        and row.salida_wr is not True
-    )
+    activas = sum(1 for row in rows if row.senal_observada_activa)
+    sin_senal = sum(1 for row in rows if not row.senal_observada_activa)
     return {
         "total": SECTION_COUNT,
         "con_dato": con_dato,
         "automatico_calculado": automatico,
         "manual_activo": manual,
         "salida_interna": interna,
-        "salida_wr": wr,
-        "salida_wr_sin_dato": wr_sin_dato,
-        "activas": activas,
-        "apagadas": apagadas,
+        "senales_observadas_activas": activas,
+        "sin_senal_observada": sin_senal,
     }
 
 
@@ -146,7 +125,7 @@ def get_estado(db: Session = Depends(get_db)):
 @router.get("/api/dashboard/resumen", response_model=DashboardResumenResponse)
 def get_dashboard_resumen(db: Session = Depends(get_db)):
     ciclo = _latest_ciclo(db)
-    secciones = _latest_valid_secciones(db)
+    secciones = _secciones_for_ciclo(db, ciclo)
     now = datetime.now(timezone.utc)
     age = _age_seconds(ciclo.timestamp, now)
     return {
@@ -185,19 +164,12 @@ def get_dashboard_resumen(db: Session = Depends(get_db)):
 
 @router.get("/api/secciones/actual", response_model=List[SeccionEstadoResponse])
 def get_secciones_actual(db: Session = Depends(get_db)):
-    ultimo_id = (
-        db.query(Ciclo.id)
-        .join(SeccionEstado, SeccionEstado.ciclo_id == Ciclo.id)
-        .filter(Ciclo.secciones_status == "ok")
-        .order_by(Ciclo.timestamp.desc(), Ciclo.id.desc())
-        .limit(1)
-        .scalar()
-    )
-    if ultimo_id is None:
+    ciclo = _latest_ciclo(db)
+    if ciclo.secciones_status != "ok":
         raise HTTPException(status_code=404, detail="Sin datos validos")
     return (
         db.query(SeccionEstado)
-        .filter(SeccionEstado.ciclo_id == ultimo_id)
+        .filter(SeccionEstado.ciclo_id == ciclo.id)
         .order_by(SeccionEstado.seccion_id)
         .all()
     )
@@ -205,19 +177,12 @@ def get_secciones_actual(db: Session = Depends(get_db)):
 
 @router.get("/api/horarios", response_model=List[HorarioTramoResponse])
 def get_horarios(db: Session = Depends(get_db)):
-    ultimo_id = (
-        db.query(Ciclo.id)
-        .join(HorarioTramo, HorarioTramo.ciclo_id == Ciclo.id)
-        .filter(Ciclo.horarios_status == "ok")
-        .order_by(Ciclo.timestamp.desc(), Ciclo.id.desc())
-        .limit(1)
-        .scalar()
-    )
-    if ultimo_id is None:
+    ciclo = _latest_ciclo(db)
+    if ciclo.horarios_status != "ok":
         raise HTTPException(status_code=404, detail="Sin datos validos")
     return (
         db.query(HorarioTramo)
-        .filter(HorarioTramo.ciclo_id == ultimo_id)
+        .filter(HorarioTramo.ciclo_id == ciclo.id)
         .order_by(HorarioTramo.tramo_id)
         .all()
     )
@@ -305,12 +270,21 @@ def get_ciclo_reloj_ar(ciclo_id: int, db: Session = Depends(get_db)):
     return _get_state(db, RelojArState, ciclo_id)
 
 
-@router.get("/api/ciclos/{ciclo_id}/salidas_wr", response_model=SalidasWrResponse)
-def get_ciclo_salidas_wr(ciclo_id: int, db: Session = Depends(get_db)):
-    row = _get_state(db, SalidasWrState, ciclo_id)
+@router.get("/api/ciclos/{ciclo_id}/vector_salidas_logicas", response_model=VectorSalidasLogicasResponse)
+def get_ciclo_vector_salidas_logicas(ciclo_id: int, db: Session = Depends(get_db)):
+    row = _get_state(db, VectorSalidasLogicasState, ciclo_id)
     return {
         "ciclo_id": row.ciclo_id,
+        "source_range": row.source_range,
         "raw_words": load_json_column(row.raw_words),
-        "cercha_salidas": load_json_column(row.cercha_salidas),
-        "physical_io_mapping_status": row.physical_io_mapping_status,
+        "bits": load_json_column(row.bits),
+    }
+
+
+@router.get("/api/ciclos/{ciclo_id}/contexto_plc_raw", response_model=ContextoPlcRawResponse)
+def get_ciclo_contexto_plc_raw(ciclo_id: int, db: Session = Depends(get_db)):
+    row = _get_state(db, ContextoPlcRawState, ciclo_id)
+    return {
+        "ciclo_id": row.ciclo_id,
+        "ranges": load_json_column(row.ranges),
     }

@@ -9,34 +9,83 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from model.database import Base
-from model.fase2 import Ciclo, HorarioTramo, SeccionEstado
+from acquisition.decoders import decode_vector_salidas_logicas
+from model.fase2 import (
+    Ciclo,
+    ContextoPlcRawState,
+    HorarioTramo,
+    SeccionEstado,
+    VectorSalidasLogicasState,
+)
+from model.json_columns import dump_json_column
 
 DB_PATH = Path("data/bd_estados.db")
 DB_PATH.parent.mkdir(exist_ok=True)
 
 engine = create_engine(f"sqlite:///{DB_PATH}")
+# Dev seed data is disposable; rebuild the SQLite schema so UI checks survive
+# model changes without requiring a manual database cleanup.
+Base.metadata.drop_all(engine)
 Base.metadata.create_all(engine)
 
 NOW = datetime.now(timezone.utc)
 random.seed(42)
 
-# Patron realista: 80 secciones encendidas y 32 apagadas.
+# Patron realista: 80 secciones con senal observada y 32 sin senal observada.
 def section_state(i):
     if i <= 80:
         return dict(
             automatico_calculado=True,
             manual_activo=False,
             salida_interna=True,
-            salida_wr=True,
         )
     return dict(
         automatico_calculado=False,
         manual_activo=False,
         salida_interna=False,
-        salida_wr=False,
     )
 
+
+VECTOR_RAW_WORDS = [0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0, 0, 0, 0, 0]
+VECTOR_BITS = decode_vector_salidas_logicas(VECTOR_RAW_WORDS)
+RAW_CONTEXT_RANGES = [
+    {
+        "area": "H",
+        "source_range": "H0-H42",
+        "raw_words": [0] * 43,
+    },
+    {"area": "H", "source_range": "H100", "raw_words": [0]},
+    {"area": "W", "source_range": "W1", "raw_words": [0]},
+    {
+        "area": "W",
+        "source_range": "W4-W13",
+        "raw_words": VECTOR_RAW_WORDS,
+    },
+    {"area": "W", "source_range": "W25", "raw_words": [0]},
+    {
+        "area": "D",
+        "source_range": "D100-D116",
+        "raw_words": [0] * 17,
+    },
+    {"area": "D", "source_range": "D500-D506", "raw_words": [0] * 7},
+    {"area": "D", "source_range": "D1000-D1007", "raw_words": [0] * 8},
+    {
+        "area": "D",
+        "source_range": "D1008-D1009",
+        "raw_words": [0] * 2,
+    },
+    {
+        "area": "D",
+        "source_range": "D3630-D3651",
+        "raw_words": [0] * 22,
+    },
+    {"area": "A", "source_range": "A351-A353", "raw_words": [0] * 3},
+    {"area": "A", "source_range": "A401-A402", "raw_words": [0] * 2},
+]
+
 with Session(engine) as s:
+    s.query(ContextoPlcRawState).delete()
+    s.query(VectorSalidasLogicasState).delete()
     s.query(HorarioTramo).delete()
     s.query(SeccionEstado).delete()
     s.query(Ciclo).delete()
@@ -58,7 +107,8 @@ with Session(engine) as s:
             reset_temporizado_status="ok",
             hmi_original_status="ok",
             reloj_ar_status="ok",
-            salidas_wr_status="ok",
+            vector_salidas_logicas_status="ok",
+            contexto_plc_raw_status="ok",
             modfunalu=1,
             modo_label="fotocelula",
             fotocelula_entrada=True,
@@ -87,6 +137,18 @@ with Session(engine) as s:
                 seccion_id=sec_i,
                 **st,
             ))
+
+        s.add(VectorSalidasLogicasState(
+            ciclo_id=c.id,
+            source_range="W4-W13",
+            raw_words=dump_json_column(VECTOR_RAW_WORDS),
+            bits=dump_json_column(VECTOR_BITS),
+        ))
+
+        s.add(ContextoPlcRawState(
+            ciclo_id=c.id,
+            ranges=dump_json_column(RAW_CONTEXT_RANGES),
+        ))
 
         for tramo in range(1, 13):
             s.add(HorarioTramo(

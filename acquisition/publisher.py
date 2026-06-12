@@ -14,6 +14,8 @@ from fins.frame import FINSError
 
 logger = logging.getLogger(__name__)
 
+VOLATILE_CONTEXT_RANGES = {"D500-D506", "A351-A353"}
+
 
 def _payloads_equal(a: dict, b: dict) -> bool:
     """Compara payloads ignorando campos que cambian por avance natural del ciclo."""
@@ -22,10 +24,31 @@ def _payloads_equal(a: dict, b: dict) -> bool:
 
 def _without_runtime_fields(payload: dict) -> dict:
     return {
-        key: value
+        key: _normalize_runtime_value(key, value)
         for key, value in payload.items()
         if key not in ('ts', 'plc_reloj', 'reloj_ar')
     }
+
+
+def _normalize_runtime_value(key: str, value):
+    if key != "contexto_plc_raw" or not isinstance(value, dict):
+        return value
+    normalized = dict(value)
+    normalized["ranges"] = [
+        _normalize_context_range(row)
+        for row in value.get("ranges", [])
+    ]
+    return normalized
+
+
+def _normalize_context_range(row):
+    if not isinstance(row, dict):
+        return row
+    if row.get("source_range") not in VOLATILE_CONTEXT_RANGES:
+        return row
+    normalized = dict(row)
+    normalized["raw_words"] = "<volatile_clock>"
+    return normalized
 
 
 def run_publisher(max_cycles: Optional[int] = None) -> None:

@@ -6,7 +6,7 @@ from api.routes import init_engine
 from model.database import Base, create_db_engine
 from model.fase2 import Ciclo
 from subscriber.listener import process_message
-from tests.v2_helpers import sample_payload_bytes, utc_dt
+from tests.v3_helpers import sample_payload_bytes, utc_dt
 
 
 @pytest.fixture
@@ -43,25 +43,30 @@ def test_get_db_requires_engine():
         next(get_db())
 
 
-def test_estado_returns_latest_v2_cycle(api_client):
+def test_estado_returns_latest_v3_cycle(api_client):
     data = api_client.get("/api/estado").json()
     assert data["fins_ok"] is True
     assert data["modo_label"] == "horarios"
-    assert data["salidas_wr_status"] == "ok"
+    assert data["vector_salidas_logicas_status"] == "ok"
+    assert data["contexto_plc_raw_status"] == "ok"
 
 
 def test_dashboard_resumen_counts_operational_truth(api_client):
     data = api_client.get("/api/dashboard/resumen").json()
     assert data["secciones"]["total"] == 112
     assert data["secciones"]["con_dato"] == 112
-    assert data["secciones"]["salida_wr"] == 1
-    assert data["secciones"]["activas"] == 1
-    assert data["secciones"]["apagadas"] == 111
+    assert "salida_wr" not in data["secciones"]
+    assert "activas" not in data["secciones"]
+    assert "apagadas" not in data["secciones"]
+    assert data["secciones"]["senales_observadas_activas"] == 0
+    assert data["secciones"]["sin_senal_observada"] == 112
     assert data["bloques"]["hmi_original"]["status"] == "ok"
+    assert data["bloques"]["contexto_plc_raw"]["status"] == "ok"
     assert data["frescura"]["stale_after_seconds"] == 3600
+    assert "semantica" not in data
 
 
-def test_secciones_actual_uses_v2_names(api_client):
+def test_secciones_actual_uses_v3_names(api_client):
     data = api_client.get("/api/secciones/actual").json()
     assert len(data) == 112
     sec1 = data[0]
@@ -69,10 +74,12 @@ def test_secciones_actual_uses_v2_names(api_client):
     assert sec1["automatico_calculado"] is False
     assert sec1["manual_activo"] is False
     assert sec1["salida_interna"] is False
-    assert sec1["salida_wr"] is True
+    assert sec1["senal_observada_activa"] is False
+    assert sec1["estado_observable"] == "sin_senal_observada"
+    assert "salida_wr" not in sec1
 
 
-def test_horarios_returns_decoded_v2_fields(api_client):
+def test_horarios_returns_decoded_fields(api_client):
     data = api_client.get("/api/horarios").json()
     assert len(data) == 12
     assert data[0]["inicio_hora"] == 6
@@ -95,9 +102,15 @@ def test_new_state_endpoints(api_client):
     assert reset.json()["dm_raw_words"] == [1800, 0, 0, 0, 0, 0]
     assert api_client.get(f"/api/ciclos/{ciclo_id}/hmi_original").status_code == 200
     assert api_client.get(f"/api/ciclos/{ciclo_id}/reloj_ar").status_code == 200
-    salidas = api_client.get(f"/api/ciclos/{ciclo_id}/salidas_wr").json()
-    assert salidas["raw_words"][0] == 1
-    assert len(salidas["cercha_salidas"]) == 160
+    vector = api_client.get(f"/api/ciclos/{ciclo_id}/vector_salidas_logicas").json()
+    assert vector["source_range"] == "W4-W13"
+    assert vector["raw_words"][0] == 1
+    assert len(vector["bits"]) == 160
+    assert set(vector) == {"ciclo_id", "source_range", "raw_words", "bits"}
+    context = api_client.get(f"/api/ciclos/{ciclo_id}/contexto_plc_raw").json()
+    assert set(context) == {"ciclo_id", "ranges"}
+    assert context["ranges"][0]["source_range"] == "H0-H42"
+    assert set(context["ranges"][0]) == {"area", "source_range", "raw_words"}
 
 
 def test_returns_404_when_empty(test_engine):
@@ -105,6 +118,29 @@ def test_returns_404_when_empty(test_engine):
     assert client.get("/api/estado").status_code == 404
     assert client.get("/api/dashboard/resumen").status_code == 404
     assert client.get("/api/secciones/actual").status_code == 404
+
+
+def test_dashboard_and_current_sections_use_latest_cycle_only(populated_engine):
+    client = _make_client(populated_engine)
+    with Session(populated_engine) as session:
+        session.add(
+            Ciclo(
+                timestamp=utc_dt(9),
+                fins_ok=False,
+                fins_error="timeout secciones",
+                secciones_status="failed",
+                secciones_error="timeout secciones",
+                horarios_status="failed",
+                horarios_error="timeout horarios",
+            )
+        )
+        session.commit()
+
+    summary = client.get("/api/dashboard/resumen").json()
+    assert summary["secciones"]["con_dato"] == 0
+    assert summary["bloques"]["secciones"]["status"] == "failed"
+    assert client.get("/api/secciones/actual").status_code == 404
+    assert client.get("/api/horarios").status_code == 404
 
 
 def test_historial_filters(test_engine):

@@ -8,13 +8,14 @@ from config.settings import Config
 from model.database import Base, create_db_engine
 from model.fase2 import (
     Ciclo,
+    ContextoPlcRawState,
     FotocelulaState,
     HorarioTramo,
-    SalidasWrState,
     SeccionEstado,
+    VectorSalidasLogicasState,
 )
 from subscriber.listener import process_message, run_subscriber
-from tests.v2_helpers import sample_payload_bytes, sample_payload_dict
+from tests.v3_helpers import sample_payload_bytes, sample_payload_dict
 
 
 @pytest.fixture
@@ -25,7 +26,7 @@ def db_session():
         yield session
 
 
-def test_process_message_writes_v2_cycle_and_detail_rows(db_session):
+def test_process_message_writes_v3_cycle_and_detail_rows(db_session):
     process_message(sample_payload_bytes(), db_session)
     ciclo = db_session.query(Ciclo).one()
     assert ciclo.fins_ok is True
@@ -35,16 +36,27 @@ def test_process_message_writes_v2_cycle_and_detail_rows(db_session):
     assert db_session.query(SeccionEstado).count() == 112
     assert db_session.query(HorarioTramo).count() == 12
     assert db_session.query(FotocelulaState).count() == 1
-    assert db_session.query(SalidasWrState).count() == 1
+    assert db_session.query(VectorSalidasLogicasState).count() == 1
+    assert db_session.query(ContextoPlcRawState).count() == 1
 
 
-def test_process_message_persists_section_v2_fields(db_session):
+def test_process_message_persists_section_v3_fields(db_session):
     process_message(sample_payload_bytes(), db_session)
     section = db_session.query(SeccionEstado).filter_by(seccion_id=1).one()
     assert section.automatico_calculado is False
     assert section.manual_activo is False
     assert section.salida_interna is False
-    assert section.salida_wr is True
+    assert section.senal_observada_activa is False
+    assert section.estado_observable == "sin_senal_observada"
+    assert not hasattr(section, "salida_wr")
+
+
+def test_process_message_persists_raw_context(db_session):
+    process_message(sample_payload_bytes(), db_session)
+    context = db_session.query(ContextoPlcRawState).one()
+    ranges = json.loads(context.ranges)
+    assert ranges[0]["source_range"] == "H0-H42"
+    assert set(ranges[0]) == {"area", "source_range", "raw_words"}
 
 
 def test_process_message_partial_payload_keeps_ok_blocks(db_session):
@@ -64,7 +76,7 @@ def test_process_message_failed_secciones_creates_no_section_rows(db_session):
 
 def test_invalid_payload_is_discarded(db_session):
     data = sample_payload_dict()
-    data["schema_version"] = 1
+    data["schema_version"] = 2
     process_message(json.dumps(data).encode("utf-8"), db_session)
     assert db_session.query(Ciclo).count() == 0
 

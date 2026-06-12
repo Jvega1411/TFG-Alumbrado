@@ -125,11 +125,6 @@ def _section_source(base_word: int, section_id: int) -> str:
     return f"H{base_word + idx // 16}.{idx % 16:02d}"
 
 
-def _wr_source(section_id: int) -> str:
-    idx = section_id - 1
-    return f"W{W_SALIDA_START + idx // 16}.{idx % 16:02d}"
-
-
 def _section_flags(h11_h31_raw: list[int], w4_w13_raw: list[int], section_id: int) -> dict[str, Any]:
     return {
         "id": section_id,
@@ -139,8 +134,6 @@ def _section_flags(h11_h31_raw: list[int], w4_w13_raw: list[int], section_id: in
         "manual_source": _section_source(18, section_id),
         "salida_interna": _section_bit(h11_h31_raw, H_INTERNAL_OFFSET, section_id),
         "salida_interna_source": _section_source(25, section_id),
-        "salida_wr": get_bit(w4_w13_raw[(section_id - 1) // 16], (section_id - 1) % 16),
-        "salida_wr_source": _wr_source(section_id),
     }
 
 
@@ -261,7 +254,6 @@ def decode_plc_snapshot(
     auto_ids = _active_ids(sections, "automatico_calculado")
     manual_ids = _active_ids(sections, "manual_activo")
     internal_ids = _active_ids(sections, "salida_interna")
-    wr_ids = _active_ids(sections, "salida_wr")
 
     snapshot = {
         "timestamp_utc": timestamp_utc.isoformat(),
@@ -282,13 +274,11 @@ def decode_plc_snapshot(
             "automatico_calculado": len(auto_ids),
             "manual_activo": len(manual_ids),
             "salida_interna": len(internal_ids),
-            "salida_wr": len(wr_ids),
         },
         "active_ids": {
             "automatico_calculado": auto_ids,
             "manual_activo": manual_ids,
             "salida_interna": internal_ids,
-            "salida_wr": wr_ids,
         },
         "raw_words": {
             "H10": h10_raw,
@@ -376,8 +366,7 @@ def format_plc_snapshot(snapshot: dict[str, Any], *, show_raw: bool = False) -> 
             f"{target['id']}: "
             f"auto={_format_bool(target['automatico_calculado'])} ({target['automatico_source']}) | "
             f"manual={_format_bool(target['manual_activo'])} ({target['manual_source']}) | "
-            f"interna={_format_bool(target['salida_interna'])} ({target['salida_interna_source']}) | "
-            f"wr={_format_bool(target['salida_wr'])} ({target['salida_wr_source']})"
+            f"interna={_format_bool(target['salida_interna'])} ({target['salida_interna_source']})"
         )
     lines.extend(
         [
@@ -385,14 +374,12 @@ def format_plc_snapshot(snapshot: dict[str, Any], *, show_raw: bool = False) -> 
                 "counts: "
                 f"auto={counts['automatico_calculado']} "
                 f"manual={counts['manual_activo']} "
-                f"interna={counts['salida_interna']} "
-                f"wr={counts['salida_wr']}"
+                f"interna={counts['salida_interna']}"
             ),
             (
                 "active_ids: "
                 f"manual={_range_text(active_ids['manual_activo'])} | "
-                f"interna={_range_text(active_ids['salida_interna'])} | "
-                f"wr={_range_text(active_ids['salida_wr'])}"
+                f"interna={_range_text(active_ids['salida_interna'])}"
             ),
         ]
     )
@@ -562,7 +549,7 @@ def format_plc_diff(previous: dict[str, Any] | None, current: dict[str, Any]) ->
     if previous is None:
         return format_plc_snapshot(current)
     lines = [f"timestamp_utc: {current['timestamp_utc']}"]
-    for field in ["manual_activo", "salida_interna", "salida_wr"]:
+    for field in ["manual_activo", "salida_interna"]:
         line = _format_delta(
             field,
             previous["active_ids"][field],
@@ -948,7 +935,7 @@ def _bool_text(value: Any) -> str:
 def _print_cycle_rows(rows) -> None:
     print(
         "id | timestamp | fins_ok | sec_status | hmi_sec | h10 | "
-        "h10_manual | h10_ind | manual_count | interna_count | wr_count"
+        "h10_manual | h10_ind | manual_count | interna_count"
     )
     for row in rows:
         hmi_sec = None
@@ -961,13 +948,13 @@ def _print_cycle_rows(rows) -> None:
             f"{row['secciones_status']} | {hmi_sec or '-'} | {h10_text} | "
             f"{_bool_text(row['manual_seccion_seleccionada'])} | "
             f"{_bool_text(row['indicacion_activacion_alumbrado_seccion'])} | "
-            f"{row['manual_count']} | {row['interna_count']} | {row['wr_count']}"
+            f"{row['manual_count']} | {row['interna_count']}"
         )
 
 
 def _print_section_rows(rows, section_id: int) -> None:
     print(f"\nsection {section_id} history")
-    print("id | timestamp | auto | manual | interna | wr | hmi_sec | h10_manual | h10_ind")
+    print("id | timestamp | auto | manual | interna | hmi_sec | h10_manual | h10_ind")
     for row in rows:
         hmi_sec = None
         if row["indice_seccion"] is not None and 0 <= int(row["indice_seccion"]) < SECTION_COUNT:
@@ -975,7 +962,7 @@ def _print_section_rows(rows, section_id: int) -> None:
         print(
             f"{row['id']} | {row['timestamp']} | "
             f"{_bool_text(row['automatico_calculado'])} | {_bool_text(row['manual_activo'])} | "
-            f"{_bool_text(row['salida_interna'])} | {_bool_text(row['salida_wr'])} | "
+            f"{_bool_text(row['salida_interna'])} | "
             f"{hmi_sec or '-'} | {_bool_text(row['manual_seccion_seleccionada'])} | "
             f"{_bool_text(row['indicacion_activacion_alumbrado_seccion'])}"
         )
@@ -1000,8 +987,7 @@ def inspect_db(args: argparse.Namespace) -> int:
                     h.manual_seccion_seleccionada,
                     h.indicacion_activacion_alumbrado_seccion,
                     coalesce(sum(case when s.manual_activo then 1 else 0 end), 0) as manual_count,
-                    coalesce(sum(case when s.salida_interna then 1 else 0 end), 0) as interna_count,
-                    coalesce(sum(case when s.salida_wr then 1 else 0 end), 0) as wr_count
+                    coalesce(sum(case when s.salida_interna then 1 else 0 end), 0) as interna_count
                 from ciclo c
                 left join seccion_estado s on s.ciclo_id = c.id
                 left join hmi_original_state h on h.ciclo_id = c.id
@@ -1027,7 +1013,6 @@ def inspect_db(args: argparse.Namespace) -> int:
                         s.automatico_calculado,
                         s.manual_activo,
                         s.salida_interna,
-                        s.salida_wr,
                         h.indice_seccion,
                         h.manual_seccion_seleccionada,
                         h.indicacion_activacion_alumbrado_seccion
@@ -1049,7 +1034,7 @@ def inspect_db(args: argparse.Namespace) -> int:
                     """
                     select c.id, sw.raw_words
                     from ciclo c
-                    join salidas_wr_state sw on sw.ciclo_id = c.id
+                    join vector_salidas_logicas_state sw on sw.ciclo_id = c.id
                     order by c.id desc
                     limit :limit
                     """

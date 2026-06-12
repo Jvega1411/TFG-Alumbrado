@@ -4,12 +4,12 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
 
-from schemas.blocks import READ_BLOCKS_V2
+from schemas.blocks import READ_BLOCKS_V3
 
 Word = Annotated[StrictInt, Field(ge=0, le=0xFFFF)]
 Int32 = Annotated[StrictInt, Field(ge=-(2**31), le=2**31 - 1)]
 SectionId = Annotated[StrictInt, Field(ge=1, le=112)]
-CerchaId = Annotated[StrictInt, Field(ge=1, le=160)]
+VectorBitId = Annotated[StrictInt, Field(ge=1, le=160)]
 TramoId = Annotated[StrictInt, Field(ge=1, le=12)]
 Hour = Annotated[StrictInt, Field(ge=0, le=23)]
 MinuteSecond = Annotated[StrictInt, Field(ge=0, le=59)]
@@ -23,6 +23,21 @@ FixedLen6 = Annotated[list[Word], Field(min_length=6, max_length=6)]
 FixedLen7 = Annotated[list[Word], Field(min_length=7, max_length=7)]
 FixedLen10 = Annotated[list[Word], Field(min_length=10, max_length=10)]
 FixedLen28 = Annotated[list[Word], Field(min_length=28, max_length=28)]
+
+CONTEXT_RAW_RANGE_LENGTHS = {
+    "H0-H42": 43,
+    "H100": 1,
+    "W1": 1,
+    "W4-W13": 10,
+    "W25": 1,
+    "D100-D116": 17,
+    "D500-D506": 7,
+    "D1000-D1007": 8,
+    "D1008-D1009": 2,
+    "D3630-D3651": 22,
+    "A351-A353": 3,
+    "A401-A402": 2,
+}
 
 
 def _bcd_byte_to_int(byte: int) -> int:
@@ -63,7 +78,6 @@ class SeccionPayload(BaseModel):
     automatico_calculado: StrictBool
     manual_activo: StrictBool
     salida_interna: StrictBool
-    salida_wr: StrictBool | None = None
 
 
 class ModoPayload(BaseModel):
@@ -262,35 +276,98 @@ class RelojArPayload(BaseModel):
         return self
 
 
-class CerchaSalidaPayload(BaseModel):
+class VectorSalidaLogicaBitPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    id: CerchaId
-    activa: StrictBool
+    id: VectorBitId
+    word: str
+    bit: Annotated[StrictInt, Field(ge=0, le=15)]
     source: str
-    physical_io_confirmed: Literal[False] = False
+    activa: StrictBool
 
     @model_validator(mode="after")
-    def validate_source(self) -> "CerchaSalidaPayload":
+    def validate_source(self) -> "VectorSalidaLogicaBitPayload":
         idx = self.id - 1
-        expected = f"W{4 + idx // 16}.{idx % 16:02d}"
-        if self.source != expected:
-            raise ValueError(f"source incoherente para cercha {self.id}: esperado {expected}")
+        expected_word = f"W{4 + idx // 16}"
+        expected_bit = idx % 16
+        expected_source = f"{expected_word}.{expected_bit:02d}"
+        if self.word != expected_word:
+            raise ValueError(f"word incoherente para bit {self.id}: esperado {expected_word}")
+        if self.bit != expected_bit:
+            raise ValueError(f"bit incoherente para bit {self.id}: esperado {expected_bit}")
+        if self.source != expected_source:
+            raise ValueError(f"source incoherente para bit {self.id}: esperado {expected_source}")
         return self
 
 
-class SalidasWrPayload(BaseModel):
+class VectorSalidasLogicasPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    source_range: Literal["W4-W13"]
     raw_words: FixedLen10
-    cercha_salidas: Annotated[list[CerchaSalidaPayload], Field(min_length=160, max_length=160)]
-    physical_io_mapping_status: Literal["pending_cio_map"]
+    bits: Annotated[list[VectorSalidaLogicaBitPayload], Field(min_length=160, max_length=160)]
+
+    @model_validator(mode="after")
+    def validate_bits_match_raw(self) -> "VectorSalidasLogicasPayload":
+        for row in self.bits:
+            idx = row.id - 1
+            expected = bool((self.raw_words[idx // 16] >> (idx % 16)) & 0x0001)
+            if row.activa != expected:
+                raise ValueError(f"vector bit {row.id} no coincide con raw_words")
+        return self
+
+
+class ContextoPlcRawRangePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    area: Literal["H", "W", "D", "A"]
+    source_range: Literal[
+        "H0-H42",
+        "H100",
+        "W1",
+        "W4-W13",
+        "W25",
+        "D100-D116",
+        "D500-D506",
+        "D1000-D1007",
+        "D1008-D1009",
+        "D3630-D3651",
+        "A351-A353",
+        "A401-A402",
+    ]
+    raw_words: list[Word]
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "ContextoPlcRawRangePayload":
+        expected_area = self.source_range[0]
+        if self.area != expected_area:
+            raise ValueError(f"area incoherente para {self.source_range}: esperado {expected_area}")
+        expected_len = CONTEXT_RAW_RANGE_LENGTHS[self.source_range]
+        if len(self.raw_words) != expected_len:
+            raise ValueError(
+                f"{self.source_range} requiere {expected_len} words, recibido {len(self.raw_words)}"
+            )
+        return self
+
+
+class ContextoPlcRawPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ranges: Annotated[list[ContextoPlcRawRangePayload], Field(min_length=12, max_length=12)]
+
+    @model_validator(mode="after")
+    def validate_ranges(self) -> "ContextoPlcRawPayload":
+        received = [row.source_range for row in self.ranges]
+        expected = list(CONTEXT_RAW_RANGE_LENGTHS)
+        if received != expected:
+            raise ValueError("contexto_plc_raw requiere rangos en orden: " + ", ".join(expected))
+        return self
 
 
 class LecturaPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal[2]
+    schema_version: Literal[3]
     ts: datetime
     fins_ok: StrictBool
     fins_error: str | None = None
@@ -304,15 +381,16 @@ class LecturaPayload(BaseModel):
     hmi_original: HmiOriginalPayload | None = None
     reloj_ar: RelojArPayload | None = None
     secciones: list[SeccionPayload] = Field(default_factory=list)
-    salidas_wr: SalidasWrPayload | None = None
+    vector_salidas_logicas: VectorSalidasLogicasPayload | None = None
+    contexto_plc_raw: ContextoPlcRawPayload | None = None
 
     @model_validator(mode="after")
     def validate_status_keys(self) -> "LecturaPayload":
-        expected = set(READ_BLOCKS_V2)
+        expected = set(READ_BLOCKS_V3)
         received = set(self.read_status)
         if received != expected:
             raise ValueError(
-                "read_status v2 requiere exactamente: " + ", ".join(READ_BLOCKS_V2)
+                "read_status v3 requiere exactamente: " + ", ".join(READ_BLOCKS_V3)
             )
         return self
 
@@ -354,7 +432,8 @@ class LecturaPayload(BaseModel):
             ("reset_temporizado", self.reset_temporizado),
             ("hmi_original", self.hmi_original),
             ("reloj_ar", self.reloj_ar),
-            ("salidas_wr", self.salidas_wr),
+            ("vector_salidas_logicas", self.vector_salidas_logicas),
+            ("contexto_plc_raw", self.contexto_plc_raw),
         )
         for block, payload in pairs:
             if ok(block) and payload is None:
@@ -367,22 +446,10 @@ class LecturaPayload(BaseModel):
             if tramos != list(range(1, 13)):
                 raise ValueError("horarios ok requiere tramos 1..12")
 
-        if ok("salidas_wr"):
-            ids = sorted(row.id for row in self.salidas_wr.cercha_salidas)
+        if ok("vector_salidas_logicas"):
+            ids = sorted(row.id for row in self.vector_salidas_logicas.bits)
             if ids != list(range(1, 161)):
-                raise ValueError("salidas_wr ok requiere ids 1..160")
-
-        if ok("secciones") and not ok("salidas_wr"):
-            if any(section.salida_wr is not None for section in self.secciones):
-                raise ValueError("salidas_wr failed requiere seccion.salida_wr=None")
-
-        if ok("secciones") and ok("salidas_wr"):
-            by_id = {row.id: row.activa for row in self.salidas_wr.cercha_salidas}
-            for section in self.secciones:
-                if section.salida_wr is None:
-                    raise ValueError("secciones+salidas_wr ok requiere salida_wr")
-                if section.salida_wr != by_id[section.id]:
-                    raise ValueError("seccion.salida_wr no coincide con salidas_wr")
+                raise ValueError("vector_salidas_logicas ok requiere ids 1..160")
 
         return self
 
@@ -400,7 +467,7 @@ MQTTPayload = LecturaPayload
 
 
 def parse_payload(payload_bytes: bytes) -> LecturaPayload:
-    """Decode and validate a MQTT v2 payload."""
+    """Decode and validate a MQTT v3 payload."""
     try:
         text = payload_bytes.decode("utf-8")
     except UnicodeDecodeError as exc:

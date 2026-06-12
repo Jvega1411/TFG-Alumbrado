@@ -1,9 +1,15 @@
 # Aislamiento red OT — RPi gateway
 
-Objetivo: impedir puenteo entre eth0 (red IT) y el adaptador USB ethernet (red OT/PLC).
-El switch del PLC solo debe ver tráfico FINS/UDP puerto 9600 desde la RPi.
+Objetivo: impedir puenteo entre la interfaz OT/PLC de la RPi y el enlace
+Lenovo/IT. En el despliegue validado, `eth0` es OT/PLC
+`192.168.250.220/24` y `enx6083e7ac98fb` es el enlace Lenovo
+`10.0.0.1/30`.
 
-Sustituir `<OT_IF>` por el nombre real del adaptador USB (eth1, usb0, enx<mac>...).
+El switch del PLC solo debe ver tráfico FINS/UDP puerto 9600 desde la RPi
+durante operacion normal.
+
+Sustituir `<OT_IF>` por la interfaz real que mire al PLC. No asumir que el
+adaptador USB es OT: en campo, el USB validado es el enlace Lenovo.
 
 ---
 

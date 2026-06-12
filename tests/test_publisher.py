@@ -4,7 +4,7 @@ from unittest.mock import Mock, call, patch
 import pytest
 
 from acquisition.publisher import _payloads_equal, _publish_payload, main, run_publisher
-from tests.v2_helpers import sample_payload_dict, sample_variables
+from tests.v3_helpers import sample_payload_dict, sample_variables
 
 
 class TestPayloadsEqual:
@@ -14,6 +14,8 @@ class TestPayloadsEqual:
         b["ts"] = "2026-05-12T08:30:02+00:00"
         b["plc_reloj"]["decoded"]["segundo"] = 2
         b["reloj_ar"]["decoded"]["segundo"] = 2
+        b["contexto_plc_raw"]["ranges"][6]["raw_words"][0] = 2
+        b["contexto_plc_raw"]["ranges"][10]["raw_words"][0] = 0x3002
         assert _payloads_equal(a, b) is True
 
     def test_payload_change_not_equal(self):
@@ -21,6 +23,12 @@ class TestPayloadsEqual:
         b = sample_payload_dict()
         b["modo"]["modfunalu"] = 1
         b["modo"]["modo_label"] = "fotocelula"
+        assert _payloads_equal(a, b) is False
+
+    def test_context_raw_non_clock_change_not_equal(self):
+        a = sample_payload_dict()
+        b = sample_payload_dict()
+        b["contexto_plc_raw"]["ranges"][3]["raw_words"][0] = 0
         assert _payloads_equal(a, b) is False
 
 
@@ -89,7 +97,7 @@ class TestRunPublisher:
             run_publisher(max_cycles=1)
 
         published_payload = json.loads(mock_mqtt.publish.call_args[0][1])
-        assert published_payload["schema_version"] == 2
+        assert published_payload["schema_version"] == 3
         assert published_payload["fins_ok"] is False
 
     def test_publish_failure_does_not_update_last_payload(self):

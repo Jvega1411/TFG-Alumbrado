@@ -14,6 +14,12 @@ $logs = "$root\logs"
 New-Item -ItemType Directory -Force -Path $logs | Out-Null
 Set-Location -LiteralPath $root
 
+$schemaCheck = "$root\scripts\node-config\pipeline_checks.py"
+& $py $schemaCheck schema-v3
+if ($LASTEXITCODE -ne 0) {
+    throw "Esquema BD no compatible con V3. Hacer backup/clean break o migracion autorizada antes de arrancar."
+}
+
 switch ($Role) {
     "subscriber" {
         $name = "AlumbradoSubscriber"

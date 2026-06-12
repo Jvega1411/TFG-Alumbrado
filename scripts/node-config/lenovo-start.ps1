@@ -10,6 +10,12 @@ $logA  = "$root\logs\api.log"
 Set-Location $root
 New-Item -ItemType Directory -Force -Path "$root\logs" | Out-Null
 
+Write-Host "[CHECK] Esquema SQLite V3..."
+& $py scripts\node-config\pipeline_checks.py schema-v3
+if ($LASTEXITCODE -ne 0) {
+    throw "Esquema BD no compatible con V3. Hacer backup/clean break o migracion autorizada antes de arrancar."
+}
+
 Write-Host "[START] Subscriber MQTT..."
 Start-Process -FilePath $py `
     -ArgumentList "-m subscriber.listener" `

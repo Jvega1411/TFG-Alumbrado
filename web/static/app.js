@@ -9,6 +9,8 @@ const endpoints = {
   ciclos: "/api/historial/ciclos",
   historialSecciones: "/api/historial/secciones",
   historialHorarios: "/api/historial/horarios",
+  cicloVector: (id) => `/api/ciclos/${id}/vector_salidas_logicas`,
+  cicloContextoRaw: (id) => `/api/ciclos/${id}/contexto_plc_raw`,
 };
 
 const DIAGNOSTIC_ENDPOINTS = ["resumen", "estado", "secciones", "horarios"];
@@ -106,12 +108,20 @@ async function fetchSummary() {
 }
 
 async function fetchEndpointChecks() {
-  return Promise.all(
+  const checks = await Promise.all(
     DIAGNOSTIC_ENDPOINTS.map(async (name) => {
       const result = await fetchJson(endpoints[name]);
       return [name, endpoints[name], result];
     }),
   );
+  const estado = checks.find(([name]) => name === "estado")?.[2];
+  const cicloId = estado?.ok ? estado.data?.id : null;
+  if (!cicloId) return checks;
+  const detailChecks = await Promise.all([
+    ["vector_salidas_logicas", endpoints.cicloVector(cicloId)],
+    ["contexto_plc_raw", endpoints.cicloContextoRaw(cicloId)],
+  ].map(async ([name, path]) => [name, path, await fetchJson(path)]));
+  return checks.concat(detailChecks);
 }
 
 // --- RENDER HELPERS -------------------------------------------------------
@@ -287,7 +297,8 @@ function anomalyItems(summary, seccionesResult, horariosResult) {
 function finsState(summary) {
   if (!summary) return { label: "PENDIENTE", cls: "warn" };
   const anyOk = ["secciones", "modo", "fotocelula", "reloj", "horarios", "diagnostico",
-    "reset_temporizado", "hmi_original", "reloj_ar", "salidas_wr"]
+    "reset_temporizado", "hmi_original", "reloj_ar", "vector_salidas_logicas",
+    "contexto_plc_raw"]
     .some((block) => blockOk(summary, block));
   if (summary.fins_ok === true) return { label: "OK", cls: "ok" };
   if (anyOk) return { label: "PARCIAL", cls: "warn" };
@@ -373,26 +384,26 @@ function normalizeSection(index, name, item) {
     return { index, name, state: "Fallo lectura", css: "state-bad", ts: getTimestamp(item) };
   }
 
-  const explicitState = fieldValue(item, ["estado", "state", "estado_texto"]);
-  if (explicitState !== null) {
-    return { index, name, state: String(explicitState), css: "state-active", ts: getTimestamp(item) };
-  }
-
+  const observed = fieldValue(item, ["senal_observada_activa"]);
   const auto = fieldValue(item, ["automatico_calculado"]);
   const manual = fieldValue(item, ["manual_activo"]);
   const horario = fieldValue(item, ["salida_interna"]);
-  const salidaWr = fieldValue(item, ["salida_wr"]);
+  const explicitState = fieldValue(item, ["estado_observable", "estado", "state", "estado_texto"]);
   const flags = [];
-  if (auto === true) flags.push("Auto calc.");
-  if (manual === true) flags.push("Manual");
-  if (horario === true) flags.push("Salida interna");
-  if (salidaWr === true) flags.push("WR");
+  if (auto === true) flags.push("Auto calc. obs.");
+  if (manual === true) flags.push("Orden manual obs.");
+  if (horario === true) flags.push("Interna volatil obs.");
+
+  const observedActive = typeof observed === "boolean" ? observed : flags.length > 0;
+  const defaultState = observedActive ? flags.join(" + ") : "Sin senal observada";
+  const explicitText = explicitState !== null ? String(explicitState) : "";
+  const state = flags.length ? defaultState : (explicitText || defaultState);
 
   return {
     index,
     name,
-    state: flags.length ? flags.join(" + ") : "Apagada",
-    css: flags.length ? "state-active" : "state-off",
+    state,
+    css: observedActive ? "state-active" : "state-off",
     ts: getTimestamp(item),
   };
 }
@@ -457,7 +468,9 @@ async function showResumen() {
 
   const summary = summaryResult.data;
   const counters = summary.secciones;
-  const activeCount = counters.activas ?? Math.max(0, counters.con_dato - counters.apagadas);
+  const activeCount = counters.senales_observadas_activas
+    ?? Math.max(0, counters.con_dato - (counters.sin_senal_observada ?? 0));
+  const noSignalCount = counters.sin_senal_observada ?? Math.max(0, counters.con_dato - activeCount);
   const sectionRows = seccionesResult.ok ? normalizeSections(seccionesResult.data) : [];
   const counts = sectionCounts(sectionRows);
   const fins = finsState(summary);
@@ -487,7 +500,7 @@ async function showResumen() {
         <div class="ops-kpis">
           ${metric("FINS", badge(fins.label, fins.cls), summary.fins_error || "Sin error global")}
           ${metric("Frescura", escapeHtml(formatAge(age)), freshnessHint)}
-          ${metric("Secciones activas", escapeHtml(String(activeCount)), `${counters.apagadas} apagadas`)}
+          ${metric("Secciones con senal", escapeHtml(String(activeCount)), `${noSignalCount} sin senal observada`)}
         </div>
       </div>
       <div class="sys-status-row merged">
@@ -509,7 +522,8 @@ async function showResumen() {
           ["Horarios", blockBadge(summary, "horarios")],
           ["Diagnostico", blockBadge(summary, "diagnostico")],
           ["HMI", blockBadge(summary, "hmi_original")],
-          ["Salidas WR", blockBadge(summary, "salidas_wr")],
+          ["Vector logico", blockBadge(summary, "vector_salidas_logicas")],
+          ["Contexto raw", blockBadge(summary, "contexto_plc_raw")],
         ])}
       </div>
     `) +
@@ -523,8 +537,8 @@ async function showResumen() {
       : `<div class="empty success">No hay anomalias operativas en la ultima lectura.</div>`) +
     renderPanel("Secciones", `
       <div class="section-summary">
-        ${metric("Activas", escapeHtml(String(counts.active)), "Auto calc., manual, interna o WR")}
-        ${metric("Apagadas", escapeHtml(String(counts.off)), "Fila valida con flags falsos")}
+        ${metric("Senal obs.", escapeHtml(String(counts.active)), "Auto calculada, orden manual o interna volatil")}
+        ${metric("Sin senal", escapeHtml(String(counts.off)), "Fila valida con flags observados falsos")}
         ${metric("Fallos", escapeHtml(String(counts.bad)), "Lectura invalida FINS")}
         ${metric("Sin datos", escapeHtml(String(counts.unknown)), "Ausente o no disponible")}
       </div>
@@ -562,8 +576,8 @@ async function showSecciones() {
           <div class="filter-group" aria-label="Filtro de secciones">
             ${[
               ["all", `Todas ${counts.total}`],
-              ["active", `Activas ${counts.active}`],
-              ["off", `Apagadas ${counts.off}`],
+              ["active", `Con senal ${counts.active}`],
+              ["off", `Sin senal ${counts.off}`],
             ].map(([value, label]) => `
               <button type="button" class="filter-chip${sectionFilterState === value ? " active" : ""}" data-section-filter="${value}">
                 ${escapeHtml(label)}
@@ -603,7 +617,7 @@ async function showSecciones() {
 
 function bitBadge(val) {
   if (val === null || val === undefined) return badge("?", "warn");
-  return val ? badge("ON", "ok") : badge("OFF", "off");
+  return val ? badge("TRUE obs.", "ok") : badge("FALSE obs.", "off");
 }
 
 function renderCicloDetail(ciclo, secciones) {
@@ -668,7 +682,7 @@ function renderCicloDetail(ciclo, secciones) {
 
   return renderPanel(
     ts,
-    `<p class="sub">Ciclo #${escapeHtml(ciclo.id)} · ${escapeHtml(String(activeCount))} activas</p>` +
+    `<p class="sub">Ciclo #${escapeHtml(ciclo.id)} · ${escapeHtml(String(activeCount))} con senal observada</p>` +
     metaBlock + `<div class="section-grid" id="historySecGrid">${gridHtml}</div>`,
   );
 }
@@ -737,7 +751,7 @@ async function selectHistoryCiclo(cicloId) {
   } else {
     const rows = historySelectedSecciones.length ? normalizeSections(historySelectedSecciones) : [];
     const activeCount = rows.filter((r) => r.css === "state-active").length;
-    stateText = `${activeCount} cerchas activas`;
+    stateText = `${activeCount} secciones con senal observada`;
   }
   setDetail("Ciclo", `#${cicloId}`, stateText, formatDateTime(ciclo?.timestamp));
 

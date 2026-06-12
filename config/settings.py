@@ -45,7 +45,7 @@ class Config:
     DB_PORT: int     = int(os.getenv('DB_PORT', '1433'))
 
     # Adquisición
-    ACQUISITION_INTERVAL_S: float = float(os.getenv('ACQUISITION_INTERVAL_S', '2.0'))
+    ACQUISITION_INTERVAL_S: float = float(os.getenv('ACQUISITION_INTERVAL_S', '10.0'))
 
     # Logging
     LOG_DIR: Path = _project_root / os.getenv('LOG_DIR', 'logs')

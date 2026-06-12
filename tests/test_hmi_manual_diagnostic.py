@@ -31,8 +31,7 @@ def test_decode_plc_snapshot_links_hmi_index_and_section_bits():
     assert snapshot["target_section"]["id"] == 1
     assert snapshot["target_section"]["manual_activo"] is True
     assert snapshot["target_section"]["manual_source"] == "H18.00"
-    assert snapshot["target_section"]["salida_wr"] is True
-    assert snapshot["target_section"]["salida_wr_source"] == "W4.00"
+    assert "salida_wr" not in snapshot["target_section"]
     assert snapshot["counts"]["manual_activo"] == 1
     assert snapshot["active_ids"]["manual_activo"] == [1]
 
@@ -116,7 +115,6 @@ def test_format_plc_diff_reports_changed_hmi_and_sections():
     text = diagnostic.format_plc_diff(previous, current)
 
     assert "changed manual_activo: added=2 removed=-" in text
-    assert "changed salida_wr: added=2 removed=-" in text
     assert "changed screen1.indice_seccion_raw: 0 -> 1" in text
     assert "changed screen1.manual_seccion_seleccionada: False -> True" in text
 

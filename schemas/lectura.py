@@ -35,8 +35,10 @@ class CicloResponse(BaseModel):
     hmi_original_error: Optional[str] = None
     reloj_ar_status: Optional[str] = None
     reloj_ar_error: Optional[str] = None
-    salidas_wr_status: Optional[str] = None
-    salidas_wr_error: Optional[str] = None
+    vector_salidas_logicas_status: Optional[str] = None
+    vector_salidas_logicas_error: Optional[str] = None
+    contexto_plc_raw_status: Optional[str] = None
+    contexto_plc_raw_error: Optional[str] = None
     modfunalu: Optional[int] = None
     modo_label: Optional[str] = None
     fotocelula_entrada: Optional[bool] = None
@@ -63,7 +65,8 @@ class SeccionEstadoResponse(BaseModel):
     automatico_calculado: bool
     manual_activo: bool
     salida_interna: bool
-    salida_wr: Optional[bool] = None
+    senal_observada_activa: bool
+    estado_observable: str
 
 
 class HorarioTramoResponse(BaseModel):
@@ -110,10 +113,8 @@ class DashboardSectionCountersResponse(BaseModel):
     automatico_calculado: int
     manual_activo: int
     salida_interna: int
-    salida_wr: int
-    salida_wr_sin_dato: int
-    activas: int
-    apagadas: int
+    senales_observadas_activas: int
+    sin_senal_observada: int
 
 
 class DashboardPlcRelojResponse(BaseModel):
@@ -152,11 +153,16 @@ class DashboardResumenResponse(BaseModel):
     capabilities: DashboardCapabilitiesResponse
 
 
-class SalidasWrResponse(BaseModel):
+class VectorSalidasLogicasResponse(BaseModel):
     ciclo_id: int
+    source_range: str
     raw_words: List[int]
-    cercha_salidas: List[dict]
-    physical_io_mapping_status: str
+    bits: List[dict]
+
+
+class ContextoPlcRawResponse(BaseModel):
+    ciclo_id: int
+    ranges: List[dict]
 
 
 class FotocelulaResponse(BaseModel):

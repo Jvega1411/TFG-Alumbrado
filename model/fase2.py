@@ -33,8 +33,10 @@ class Ciclo(Base):
     hmi_original_error = Column(String(512), nullable=True)
     reloj_ar_status = Column(String(16), nullable=True)
     reloj_ar_error = Column(String(512), nullable=True)
-    salidas_wr_status = Column(String(16), nullable=True)
-    salidas_wr_error = Column(String(512), nullable=True)
+    vector_salidas_logicas_status = Column(String(16), nullable=True)
+    vector_salidas_logicas_error = Column(String(512), nullable=True)
+    contexto_plc_raw_status = Column(String(16), nullable=True)
+    contexto_plc_raw_error = Column(String(512), nullable=True)
 
     modfunalu = Column(Integer, nullable=True)
     modo_label = Column(String(32), nullable=True)
@@ -74,7 +76,14 @@ class SeccionEstado(Base):
     automatico_calculado = Column(Boolean, nullable=False)
     manual_activo = Column(Boolean, nullable=False)
     salida_interna = Column(Boolean, nullable=False)
-    salida_wr = Column(Boolean, nullable=True)
+
+    @property
+    def senal_observada_activa(self) -> bool:
+        return bool(self.automatico_calculado or self.manual_activo or self.salida_interna)
+
+    @property
+    def estado_observable(self) -> str:
+        return "senal_observada_activa" if self.senal_observada_activa else "sin_senal_observada"
 
 
 class HorarioTramo(Base):
@@ -176,15 +185,27 @@ class RelojArState(Base):
     encoding = Column(String(32), nullable=False)
 
 
-class SalidasWrState(Base):
-    __tablename__ = "salidas_wr_state"
+class VectorSalidasLogicasState(Base):
+    __tablename__ = "vector_salidas_logicas_state"
     __table_args__ = (
-        Index("ix_salidas_wr_state_ciclo_id", "ciclo_id"),
-        UniqueConstraint("ciclo_id", name="uq_salidas_wr_state_ciclo_id"),
+        Index("ix_vector_salidas_logicas_state_ciclo_id", "ciclo_id"),
+        UniqueConstraint("ciclo_id", name="uq_vector_salidas_logicas_state_ciclo_id"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     ciclo_id = Column(Integer, ForeignKey("ciclo.id"), nullable=False)
+    source_range = Column(String(16), nullable=False)
     raw_words = Column(Text, nullable=False)
-    cercha_salidas = Column(Text, nullable=False)
-    physical_io_mapping_status = Column(String(64), nullable=False)
+    bits = Column(Text, nullable=False)
+
+
+class ContextoPlcRawState(Base):
+    __tablename__ = "contexto_plc_raw_state"
+    __table_args__ = (
+        Index("ix_contexto_plc_raw_state_ciclo_id", "ciclo_id"),
+        UniqueConstraint("ciclo_id", name="uq_contexto_plc_raw_state_ciclo_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ciclo_id = Column(Integer, ForeignKey("ciclo.id"), nullable=False)
+    ranges = Column(Text, nullable=False)

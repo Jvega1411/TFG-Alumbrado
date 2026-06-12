@@ -50,6 +50,139 @@ def _latest(conn):
     return row, ts, age
 
 
+def _table_columns(conn, table: str) -> set[str]:
+    return {
+        row[1]
+        for row in conn.execute(text(f"pragma table_info({table})"))
+    }
+
+
+def _sqlite_database_path(url: str) -> Path | None:
+    parsed = make_url(url)
+    if not parsed.drivername.startswith("sqlite"):
+        return None
+    if not parsed.database or parsed.database == ":memory:":
+        return None
+    path = Path(parsed.database)
+    if path.is_absolute():
+        return path
+    return PROJECT_ROOT / path
+
+
+def _sqlite_tables(conn) -> set[str]:
+    return {
+        row[0]
+        for row in conn.execute(text("select name from sqlite_master where type='table'"))
+    }
+
+
+def _require_v3_schema(conn, tables: set[str]) -> None:
+    required_tables = {
+        "ciclo",
+        "seccion_estado",
+        "vector_salidas_logicas_state",
+        "contexto_plc_raw_state",
+    }
+    missing_tables = sorted(required_tables - tables)
+    if missing_tables:
+        raise SystemExit(
+            "schema V3 incompleto, faltan tablas: " + ", ".join(missing_tables)
+        )
+
+    required_columns = {
+        "ciclo": {
+            "vector_salidas_logicas_status",
+            "vector_salidas_logicas_error",
+            "contexto_plc_raw_status",
+            "contexto_plc_raw_error",
+        },
+        "seccion_estado": {
+            "automatico_calculado",
+            "manual_activo",
+            "salida_interna",
+        },
+        "vector_salidas_logicas_state": {
+            "source_range",
+            "raw_words",
+            "bits",
+        },
+        "contexto_plc_raw_state": {
+            "ranges",
+        },
+    }
+    for table, columns in required_columns.items():
+        table_columns = _table_columns(conn, table)
+        missing_columns = sorted(columns - table_columns)
+        if missing_columns:
+            raise SystemExit(
+                f"schema V3 incompleto en {table}, faltan columnas: "
+                + ", ".join(missing_columns)
+            )
+
+    legacy_context_columns = {
+        "semantic_policy",
+        "source_basis",
+        "physical_light_state_confirmed",
+        "operational_assumption",
+        "warnings",
+    }
+    found_legacy_context_columns = sorted(
+        legacy_context_columns & _table_columns(conn, "contexto_plc_raw_state")
+    )
+    if found_legacy_context_columns:
+        raise SystemExit(
+            "schema V3 raw-only incompatible en contexto_plc_raw_state, "
+            "sobran columnas legacy: "
+            + ", ".join(found_legacy_context_columns)
+            + ". Hacer backup/clean break o migracion autorizada."
+        )
+
+    legacy_vector_columns = {
+        "mapping_status",
+        "physical_io_mapping_status",
+        "contribution_mapping_status",
+    }
+    found_legacy_vector_columns = sorted(
+        legacy_vector_columns & _table_columns(conn, "vector_salidas_logicas_state")
+    )
+    if found_legacy_vector_columns:
+        raise SystemExit(
+            "schema V3 raw-only incompatible en vector_salidas_logicas_state, "
+            "sobran columnas legacy: "
+            + ", ".join(found_legacy_vector_columns)
+            + ". Hacer backup/clean break o migracion autorizada."
+        )
+
+
+def schema_v3(_args) -> int:
+    Config = _config()
+    Config._validate_db()
+
+    db_path = _sqlite_database_path(Config.DB_ESTADOS_URL)
+    if db_path is not None and not db_path.exists():
+        if Config.DB_AUTO_CREATE:
+            print("OK schema V3: SQLite no existe; DB_AUTO_CREATE=true creara esquema limpio")
+            return 0
+        raise SystemExit(
+            "SQLite no existe y DB_AUTO_CREATE=false; crear esquema limpio o revisar .env"
+        )
+
+    engine = create_engine(Config.DB_ESTADOS_URL)
+    with engine.connect() as conn:
+        tables = _sqlite_tables(conn)
+        if not tables:
+            if Config.DB_AUTO_CREATE:
+                print("OK schema V3: SQLite vacia; DB_AUTO_CREATE=true creara tablas")
+                return 0
+            raise SystemExit(
+                "SQLite sin tablas y DB_AUTO_CREATE=false; crear esquema limpio o revisar .env"
+            )
+        _require_v3_schema(conn, tables)
+
+    print("OK schema V3 compatible")
+    return 0
+
+
 def effective_config(_args) -> int:
     Config = _config()
     Config.validate_mqtt()
@@ -79,12 +212,10 @@ def db_liveness(args) -> int:
 
     engine = create_engine(Config.DB_ESTADOS_URL)
     with engine.connect() as conn:
-        tables = {
-            row[0]
-            for row in conn.execute(text("select name from sqlite_master where type='table'"))
-        }
+        tables = _sqlite_tables(conn)
         if "ciclo" not in tables:
             raise SystemExit("tabla ciclo no existe")
+        _require_v3_schema(conn, tables)
         count = conn.execute(text("select count(*) from ciclo")).scalar_one()
         if count < 1:
             raise SystemExit("tabla ciclo vacia")
@@ -160,9 +291,7 @@ def recent_cycles(args) -> int:
                     coalesce(sum(case when s.automatico_calculado then 1 else 0 end), 0)
                         as automatico_calculado,
                     coalesce(sum(case when s.salida_interna then 1 else 0 end), 0)
-                        as salida_interna,
-                    coalesce(sum(case when s.salida_wr then 1 else 0 end), 0)
-                        as salida_wr
+                        as salida_interna
                 from ciclo c
                 left join seccion_estado s on s.ciclo_id = c.id
                 group by c.id, c.timestamp, c.fins_ok, c.secciones_status
@@ -174,14 +303,13 @@ def recent_cycles(args) -> int:
         ).mappings().all()
         print(
             "id | timestamp | fins_ok | sec_status | manual_activo | "
-            "automatico_calculado | salida_interna | salida_wr"
+            "automatico_calculado | salida_interna"
         )
         for row in rows:
             print(
                 f"{row['id']} | {row['timestamp']} | {row['fins_ok']} | "
                 f"{row['secciones_status']} | {row['manual_activo']} | "
-                f"{row['automatico_calculado']} | {row['salida_interna']} | "
-                f"{row['salida_wr']}"
+                f"{row['automatico_calculado']} | {row['salida_interna']}"
             )
     return 0
 
@@ -193,6 +321,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("effective-config").set_defaults(func=effective_config)
     subparsers.add_parser("mqtt-broker-host").set_defaults(func=mqtt_broker_host)
     subparsers.add_parser("inspect-config").set_defaults(func=inspect_config)
+    subparsers.add_parser("schema-v3").set_defaults(func=schema_v3)
 
     db_parser = subparsers.add_parser("db-liveness")
     db_parser.add_argument("max_age_seconds", type=int)

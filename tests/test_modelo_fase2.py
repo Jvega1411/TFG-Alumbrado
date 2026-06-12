@@ -6,7 +6,7 @@ from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 
 from model.database import Base, create_db_engine
-from model.fase2 import Ciclo, HorarioTramo, SeccionEstado
+from model.fase2 import Ciclo, ContextoPlcRawState, HorarioTramo, SeccionEstado, VectorSalidasLogicasState
 
 
 @pytest.fixture
@@ -23,7 +23,13 @@ def _ts(hour: int = 10) -> datetime:
 class TestEsquema:
     def test_tablas_creadas(self, engine):
         names = inspect(engine).get_table_names()
-        assert {"ciclo", "seccion_estado", "horario_tramo"}.issubset(set(names))
+        assert {
+            "ciclo",
+            "seccion_estado",
+            "horario_tramo",
+            "vector_salidas_logicas_state",
+            "contexto_plc_raw_state",
+        }.issubset(set(names))
 
     def test_tablas_fase1_no_creadas(self, engine):
         names = inspect(engine).get_table_names()
@@ -131,3 +137,24 @@ class TestHorarioTramo:
             row = s.query(HorarioTramo).first()
             assert row.tramo_id == 1
             assert row.inicio_raw == 800
+
+
+class TestV3RawStates:
+    def test_vector_and_context_fk(self, engine):
+        with Session(engine) as s:
+            ciclo = Ciclo(timestamp=_ts(), fins_ok=True)
+            s.add(ciclo)
+            s.flush()
+            s.add(VectorSalidasLogicasState(
+                ciclo_id=ciclo.id,
+                source_range="W4-W13",
+                raw_words="[0,0,0,0,0,0,0,0,0,0]",
+                bits="[]",
+            ))
+            s.add(ContextoPlcRawState(
+                ciclo_id=ciclo.id,
+                ranges="[]",
+            ))
+            s.commit()
+            assert s.query(VectorSalidasLogicasState).count() == 1
+            assert s.query(ContextoPlcRawState).count() == 1

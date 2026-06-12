@@ -5,6 +5,11 @@
 **Alcance:** Todas las vistas (Estado, Secciones, Historial)  
 **Densidad:** Compacto
 
+**Nota V3 observable (2026-05-29):** este documento es historico para layout.
+Las etiquetas `Activas`/`Apagadas` usadas abajo pertenecen a la UI anterior;
+la UI vigente debe hablar de `senal observada` / `sin senal observada` y no de
+estado fisico final.
+
 ---
 
 ## Objetivo

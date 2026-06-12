@@ -3,17 +3,17 @@ import pytest
 from acquisition.decoders import (
     bcd_byte_to_int,
     decode_ar_clock,
-    decode_cercha_salidas,
     decode_clock_dm,
     decode_i32_low_high,
     decode_modo_label,
     decode_schedule_tramos,
     decode_u32_low_high,
+    decode_vector_salidas_logicas,
     extract_section_bits,
     get_bit,
     words,
 )
-from tests.v2_helpers import make_fins_response
+from tests.v3_helpers import make_fins_response
 
 
 def test_words_extracts_fins_data():
@@ -82,20 +82,21 @@ def test_decode_schedule_tramos_sources_and_shape():
     assert tramos[4]["source"]["fin_hora"] == "D3636"
 
 
-def test_decode_cercha_salidas_mapping():
+def test_decode_vector_salidas_logicas_mapping():
     raw = [0] * 10
     raw[0] = 0x0001
     raw[6] = 0x8000
     raw[7] = 0x0001
     raw[9] = 0x8000
-    salidas = decode_cercha_salidas(raw)
-    assert len(salidas) == 160
-    assert salidas[0] == {
+    bits = decode_vector_salidas_logicas(raw)
+    assert len(bits) == 160
+    assert bits[0] == {
         "id": 1,
-        "activa": True,
+        "word": "W4",
+        "bit": 0,
         "source": "W4.00",
-        "physical_io_confirmed": False,
+        "activa": True,
     }
-    assert salidas[111]["source"] == "W10.15"
-    assert salidas[112]["source"] == "W11.00"
-    assert salidas[159]["source"] == "W13.15"
+    assert bits[111]["source"] == "W10.15"
+    assert bits[112]["source"] == "W11.00"
+    assert bits[159]["source"] == "W13.15"

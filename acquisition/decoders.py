@@ -144,19 +144,21 @@ def decode_schedule_tramos(raw_words: list[int]) -> list[dict]:
     return tramos
 
 
-def decode_cercha_salidas(raw_words: list[int]) -> list[dict]:
+def decode_vector_salidas_logicas(raw_words: list[int]) -> list[dict]:
     if len(raw_words) != 10:
-        raise ValueError(f"salidas WR requiere 10 words, recibido {len(raw_words)}")
-    salidas = []
+        raise ValueError(f"vector salidas logicas requiere 10 words, recibido {len(raw_words)}")
+    bits = []
     for idx in range(160):
         word_offset = idx // 16
         bit = idx % 16
-        salidas.append(
+        word = f"W{4 + word_offset}"
+        bits.append(
             {
                 "id": idx + 1,
+                "word": word,
+                "bit": bit,
+                "source": f"{word}.{bit:02d}",
                 "activa": get_bit(raw_words[word_offset], bit),
-                "source": f"W{4 + word_offset}.{bit:02d}",
-                "physical_io_confirmed": False,
             }
         )
-    return salidas
+    return bits

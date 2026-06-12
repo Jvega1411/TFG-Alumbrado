@@ -1,4 +1,4 @@
-READ_BLOCKS_V2 = (
+READ_BLOCKS_V3 = (
     "secciones",
     "modo",
     "fotocelula",
@@ -8,7 +8,8 @@ READ_BLOCKS_V2 = (
     "reset_temporizado",
     "hmi_original",
     "reloj_ar",
-    "salidas_wr",
+    "vector_salidas_logicas",
+    "contexto_plc_raw",
 )
 
-READ_BLOCKS = READ_BLOCKS_V2
+READ_BLOCKS = READ_BLOCKS_V3
