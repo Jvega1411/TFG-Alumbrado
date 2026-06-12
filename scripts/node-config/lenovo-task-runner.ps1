@@ -36,7 +36,15 @@ switch ($Role) {
 }
 
 "===== START $name $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') =====" | Out-File -FilePath $stdout -Append -Encoding utf8
-& $py @pythonArgs 1>> $stdout 2>> $stderr
-$exitCode = $LASTEXITCODE
+$previousErrorActionPreference = $ErrorActionPreference
+try {
+    # Uvicorn writes normal INFO logs to stderr. In Windows PowerShell with
+    # ErrorActionPreference=Stop, native stderr is promoted to NativeCommandError.
+    $ErrorActionPreference = "Continue"
+    & $py @pythonArgs 1>> $stdout 2>> $stderr
+    $exitCode = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+}
 "===== EXIT $name $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') code $exitCode =====" | Out-File -FilePath $stdout -Append -Encoding utf8
 exit $exitCode
