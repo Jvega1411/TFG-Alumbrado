@@ -13,6 +13,145 @@ def _load_pipeline_checks():
     return module
 
 
+def _v3_table_columns(checks):
+    ciclo_columns = [
+        "id",
+        "timestamp",
+        "fins_ok",
+        "fins_error",
+        "modfunalu",
+        "modo_label",
+        "fotocelula_entrada",
+        "fotocelula_mem_fun",
+        "fotocelula_mem_act",
+        "plc_reloj_raw_words",
+        "plc_reloj_encoding",
+        "plc_seg",
+        "plc_min",
+        "plc_hora",
+        "plc_dia",
+        "plc_mes",
+        "plc_anio",
+        "plc_diasem",
+        "cycle_time_error",
+        "low_battery",
+        "io_verify_error",
+    ]
+    for block in checks.READ_BLOCKS_V3:
+        ciclo_columns.extend([f"{block}_status", f"{block}_error"])
+
+    return {
+        "ciclo": ciclo_columns,
+        "seccion_estado": [
+            "id",
+            "ciclo_id",
+            "timestamp",
+            "seccion_id",
+            "automatico_calculado",
+            "manual_activo",
+            "salida_interna",
+        ],
+        "horario_tramo": [
+            "id",
+            "ciclo_id",
+            "timestamp",
+            "tramo_id",
+            "inicio_raw",
+            "fin_raw",
+            "inicio_raw_words",
+            "fin_raw_words",
+            "source_json",
+            "inicio_hora",
+            "inicio_minuto",
+            "fin_hora",
+            "fin_minuto",
+        ],
+        "fotocelula_state": [
+            "id",
+            "ciclo_id",
+            "entrada_raw",
+            "mem_fun",
+            "filtrada_activa",
+            "temporizador_activacion_s",
+            "temporizador_desactivacion_s",
+            "retardo_activacion_s",
+            "retardo_desactivacion_s",
+        ],
+        "reset_temporizado_state": [
+            "id",
+            "ciclo_id",
+            "w1_raw",
+            "dm_raw_words",
+            "horario_global_activo",
+            "reset_activo",
+            "retardo_segundo_apagado_s",
+            "temporizador_segundo_apagado_s",
+            "contador_apagados",
+            "max_reintentos",
+        ],
+        "hmi_original_state": [
+            "id",
+            "ciclo_id",
+            "indice_seccion",
+            "indice_anterior",
+            "h10_raw",
+            "automatico_seccion_seleccionada",
+            "manual_seccion_seleccionada",
+            "orden_transferencia_comun",
+            "indicacion_activacion_alumbrado_seccion",
+        ],
+        "reloj_ar_state": [
+            "id",
+            "ciclo_id",
+            "raw_a351",
+            "raw_a352",
+            "raw_a353",
+            "ar_minuto",
+            "ar_segundo",
+            "ar_dia",
+            "ar_hora",
+            "ar_anio",
+            "ar_mes",
+            "encoding",
+        ],
+        "vector_salidas_logicas_state": [
+            "id",
+            "ciclo_id",
+            "source_range",
+            "raw_words",
+            "bits",
+        ],
+        "contexto_plc_raw_state": [
+            "id",
+            "ciclo_id",
+            "ranges",
+        ],
+    }
+
+
+def _create_complete_v3_schema(
+    conn,
+    checks,
+    *,
+    omit_table=None,
+    omit_column=None,
+    extra_columns=None,
+):
+    extra_columns = extra_columns or {}
+    for table, columns in _v3_table_columns(checks).items():
+        if table == omit_table:
+            continue
+        column_defs = []
+        for column in columns:
+            if omit_column == (table, column):
+                continue
+            column_type = "integer primary key" if column == "id" else "text"
+            column_defs.append(f"{column} {column_type}")
+        for column in extra_columns.get(table, []):
+            column_defs.append(f"{column} text")
+        conn.execute(text(f"create table {table} ({', '.join(column_defs)})"))
+
+
 def test_safe_db_url_hides_password():
     checks = _load_pipeline_checks()
 
@@ -38,48 +177,79 @@ def test_parser_accepts_schema_v3_command():
     assert args.func is checks.schema_v3
 
 
-def test_require_v3_schema_reports_missing_tables():
+def test_require_v3_schema_accepts_complete_minimal_schema():
     checks = _load_pipeline_checks()
     engine = create_engine("sqlite:///:memory:")
     with engine.connect() as conn:
-        conn.execute(text("create table ciclo (id integer primary key)"))
-        tables = {"ciclo"}
-        with pytest.raises(SystemExit, match="schema V3 incompleto"):
-            checks._require_v3_schema(conn, tables)
+        _create_complete_v3_schema(conn, checks)
+
+        checks._require_v3_schema(conn, checks._sqlite_tables(conn))
+
+
+@pytest.mark.parametrize(
+    "table",
+    [
+        "ciclo",
+        "seccion_estado",
+        "horario_tramo",
+        "fotocelula_state",
+        "reset_temporizado_state",
+        "hmi_original_state",
+        "reloj_ar_state",
+        "vector_salidas_logicas_state",
+        "contexto_plc_raw_state",
+    ],
+)
+def test_require_v3_schema_reports_each_missing_required_table(table):
+    checks = _load_pipeline_checks()
+    engine = create_engine("sqlite:///:memory:")
+    with engine.connect() as conn:
+        _create_complete_v3_schema(conn, checks, omit_table=table)
+
+        with pytest.raises(SystemExit) as exc:
+            checks._require_v3_schema(conn, checks._sqlite_tables(conn))
+
+        message = str(exc.value)
+        assert "schema V3 incompleto, faltan tablas:" in message
+        assert table in message
+
+
+@pytest.mark.parametrize(
+    ("table", "column"),
+    [
+        ("ciclo", "reloj_ar_status"),
+        ("horario_tramo", "source_json"),
+        ("fotocelula_state", "filtrada_activa"),
+        ("vector_salidas_logicas_state", "raw_words"),
+    ],
+)
+def test_require_v3_schema_reports_missing_required_column(table, column):
+    checks = _load_pipeline_checks()
+    engine = create_engine("sqlite:///:memory:")
+    with engine.connect() as conn:
+        _create_complete_v3_schema(conn, checks, omit_column=(table, column))
+
+        with pytest.raises(SystemExit) as exc:
+            checks._require_v3_schema(conn, checks._sqlite_tables(conn))
+
+        message = str(exc.value)
+        assert f"schema V3 incompleto en {table}, faltan columnas:" in message
+        assert column in message
 
 
 def test_require_v3_schema_rejects_legacy_context_metadata_columns():
     checks = _load_pipeline_checks()
     engine = create_engine("sqlite:///:memory:")
     with engine.connect() as conn:
-        conn.execute(text(
-            "create table ciclo ("
-            "id integer primary key, "
-            "vector_salidas_logicas_status text, "
-            "vector_salidas_logicas_error text, "
-            "contexto_plc_raw_status text, "
-            "contexto_plc_raw_error text)"
-        ))
-        conn.execute(text(
-            "create table seccion_estado ("
-            "automatico_calculado integer, "
-            "manual_activo integer, "
-            "salida_interna integer)"
-        ))
-        conn.execute(text(
-            "create table vector_salidas_logicas_state ("
-            "source_range text, raw_words text, bits text)"
-        ))
-        conn.execute(text(
-            "create table contexto_plc_raw_state ("
-            "ranges text, semantic_policy text not null, warnings text not null)"
-        ))
-        tables = {
-            "ciclo",
-            "seccion_estado",
-            "vector_salidas_logicas_state",
-            "contexto_plc_raw_state",
-        }
+        _create_complete_v3_schema(
+            conn,
+            checks,
+            extra_columns={
+                "contexto_plc_raw_state": ["semantic_policy", "warnings"],
+            },
+        )
+        tables = checks._sqlite_tables(conn)
+
         with pytest.raises(SystemExit, match="raw-only incompatible"):
             checks._require_v3_schema(conn, tables)
 
@@ -88,31 +258,13 @@ def test_require_v3_schema_rejects_legacy_vector_mapping_columns():
     checks = _load_pipeline_checks()
     engine = create_engine("sqlite:///:memory:")
     with engine.connect() as conn:
-        conn.execute(text(
-            "create table ciclo ("
-            "id integer primary key, "
-            "vector_salidas_logicas_status text, "
-            "vector_salidas_logicas_error text, "
-            "contexto_plc_raw_status text, "
-            "contexto_plc_raw_error text)"
-        ))
-        conn.execute(text(
-            "create table seccion_estado ("
-            "automatico_calculado integer, "
-            "manual_activo integer, "
-            "salida_interna integer)"
-        ))
-        conn.execute(text(
-            "create table vector_salidas_logicas_state ("
-            "source_range text, raw_words text, bits text, mapping_status text)"
-        ))
-        conn.execute(text("create table contexto_plc_raw_state (ranges text)"))
-        tables = {
-            "ciclo",
-            "seccion_estado",
-            "vector_salidas_logicas_state",
-            "contexto_plc_raw_state",
-        }
+        _create_complete_v3_schema(
+            conn,
+            checks,
+            extra_columns={"vector_salidas_logicas_state": ["mapping_status"]},
+        )
+        tables = checks._sqlite_tables(conn)
+
         with pytest.raises(SystemExit, match="vector_salidas_logicas_state"):
             checks._require_v3_schema(conn, tables)
 

@@ -15,6 +15,8 @@ if str(PROJECT_ROOT) not in sys.path:
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
+from schemas.blocks import READ_BLOCKS_V3
+
 
 def _safe_db_url(url: str) -> str:
     try:
@@ -80,6 +82,11 @@ def _require_v3_schema(conn, tables: set[str]) -> None:
     required_tables = {
         "ciclo",
         "seccion_estado",
+        "horario_tramo",
+        "fotocelula_state",
+        "reset_temporizado_state",
+        "hmi_original_state",
+        "reloj_ar_state",
         "vector_salidas_logicas_state",
         "contexto_plc_raw_state",
     }
@@ -89,24 +96,117 @@ def _require_v3_schema(conn, tables: set[str]) -> None:
             "schema V3 incompleto, faltan tablas: " + ", ".join(missing_tables)
         )
 
+    ciclo_columns = {
+        "id",
+        "timestamp",
+        "fins_ok",
+        "fins_error",
+        "modfunalu",
+        "modo_label",
+        "fotocelula_entrada",
+        "fotocelula_mem_fun",
+        "fotocelula_mem_act",
+        "plc_reloj_raw_words",
+        "plc_reloj_encoding",
+        "plc_seg",
+        "plc_min",
+        "plc_hora",
+        "plc_dia",
+        "plc_mes",
+        "plc_anio",
+        "plc_diasem",
+        "cycle_time_error",
+        "low_battery",
+        "io_verify_error",
+    }
+    for block in READ_BLOCKS_V3:
+        ciclo_columns.add(f"{block}_status")
+        ciclo_columns.add(f"{block}_error")
+
     required_columns = {
-        "ciclo": {
-            "vector_salidas_logicas_status",
-            "vector_salidas_logicas_error",
-            "contexto_plc_raw_status",
-            "contexto_plc_raw_error",
-        },
+        "ciclo": ciclo_columns,
         "seccion_estado": {
+            "id",
+            "ciclo_id",
+            "timestamp",
+            "seccion_id",
             "automatico_calculado",
             "manual_activo",
             "salida_interna",
         },
+        "horario_tramo": {
+            "id",
+            "ciclo_id",
+            "timestamp",
+            "tramo_id",
+            "inicio_raw",
+            "fin_raw",
+            "inicio_raw_words",
+            "fin_raw_words",
+            "source_json",
+            "inicio_hora",
+            "inicio_minuto",
+            "fin_hora",
+            "fin_minuto",
+        },
+        "fotocelula_state": {
+            "id",
+            "ciclo_id",
+            "entrada_raw",
+            "mem_fun",
+            "filtrada_activa",
+            "temporizador_activacion_s",
+            "temporizador_desactivacion_s",
+            "retardo_activacion_s",
+            "retardo_desactivacion_s",
+        },
+        "reset_temporizado_state": {
+            "id",
+            "ciclo_id",
+            "w1_raw",
+            "dm_raw_words",
+            "horario_global_activo",
+            "reset_activo",
+            "retardo_segundo_apagado_s",
+            "temporizador_segundo_apagado_s",
+            "contador_apagados",
+            "max_reintentos",
+        },
+        "hmi_original_state": {
+            "id",
+            "ciclo_id",
+            "indice_seccion",
+            "indice_anterior",
+            "h10_raw",
+            "automatico_seccion_seleccionada",
+            "manual_seccion_seleccionada",
+            "orden_transferencia_comun",
+            "indicacion_activacion_alumbrado_seccion",
+        },
+        "reloj_ar_state": {
+            "id",
+            "ciclo_id",
+            "raw_a351",
+            "raw_a352",
+            "raw_a353",
+            "ar_minuto",
+            "ar_segundo",
+            "ar_dia",
+            "ar_hora",
+            "ar_anio",
+            "ar_mes",
+            "encoding",
+        },
         "vector_salidas_logicas_state": {
+            "id",
+            "ciclo_id",
             "source_range",
             "raw_words",
             "bits",
         },
         "contexto_plc_raw_state": {
+            "id",
+            "ciclo_id",
             "ranges",
         },
     }

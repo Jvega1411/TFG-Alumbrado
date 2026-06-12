@@ -74,7 +74,7 @@ class Config:
     API_HOST: str = os.getenv('API_HOST', '127.0.0.1')
     API_PORT: int = int(os.getenv('API_PORT', '8000'))
 
-    # BD — False cuando el esquema V2 ya existe; true crea tablas limpias desde modelos.
+    # BD: V3 clean break. False no crea tablas; true crea esquema limpio desde modelos.
     DB_AUTO_CREATE: bool = os.getenv('DB_AUTO_CREATE', 'false').lower() == 'true'
 
     @staticmethod

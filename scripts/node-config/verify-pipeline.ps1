@@ -3,6 +3,8 @@
 
 param(
     [string]$Root = "",
+    [string]$ExpectedBranch = "main",
+    [string]$ExpectedCommit = "",
     [string]$MqttHost = "",
     [int]$MqttPort = 1883,
     [string]$ApiUrl = "http://127.0.0.1:8000/",
@@ -32,6 +34,15 @@ function Check {
         Write-Host "ERR  $Label - $($_.Exception.Message)"
         $script:ok = $false
     }
+}
+
+function Invoke-GitOutput {
+    param([Parameter(Mandatory=$true)][string[]]$Arguments)
+    $output = & git @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "git $($Arguments -join ' ') failed with exit code $LASTEXITCODE"
+    }
+    return ($output -join "`n").Trim()
 }
 
 function Get-AlumbradoPythonProcess {
@@ -79,6 +90,26 @@ Write-Host ""
 
 Check "Directorio de despliegue existe" {
     Test-Path -LiteralPath $Root -PathType Container
+}
+
+Check "Checkout git esperado" {
+    if (-not (Test-Path -LiteralPath (Join-Path $Root ".git") -PathType Container)) {
+        Write-Host "     $Root no contiene .git"
+        return $false
+    }
+    $branch = Invoke-GitOutput -Arguments @("-C", $Root, "rev-parse", "--abbrev-ref", "HEAD")
+    $commit = Invoke-GitOutput -Arguments @("-C", $Root, "rev-parse", "HEAD")
+    Write-Host "     branch=$branch"
+    Write-Host "     commit=$commit"
+    if ($ExpectedBranch -and $branch -ne $ExpectedBranch) {
+        Write-Host "     branch esperado=$ExpectedBranch"
+        return $false
+    }
+    if ($ExpectedCommit -and $commit.ToLowerInvariant() -ne $ExpectedCommit.Trim().ToLowerInvariant()) {
+        Write-Host "     commit esperado=$ExpectedCommit"
+        return $false
+    }
+    return $true
 }
 
 Check "Python venv existe" {
