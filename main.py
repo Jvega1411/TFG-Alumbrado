@@ -33,4 +33,4 @@ def index() -> FileResponse:
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host=Config.API_HOST, port=Config.API_PORT, reload=False)
+    uvicorn.run(app, host=Config.API_HOST, port=Config.API_PORT, reload=False)
