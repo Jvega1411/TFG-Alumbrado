@@ -102,6 +102,7 @@ class TestMqttDefaults:
     def test_api_port_default(self):
         assert Config.API_PORT == 8000
 
+    @pytest.mark.skipif(bool(os.getenv('DB_AUTO_CREATE')), reason="env overrides default")
     def test_db_auto_create_default_is_false(self):
         assert Config.DB_AUTO_CREATE is False
 
