@@ -25,6 +25,16 @@ const SKELETON = `<div class="skeleton-panel"></div><div class="skeleton-panel">
 const STALE_WARN_FALLBACK_S = 3600;
 const STALE_CRIT_S = 86400;  // 24h → aviso rojo
 const REFRESH_INTERVALS = { estado: 3000, secciones: 5000 };
+const VIEW_NAMES = new Set(["estado", "secciones", "historial"]);
+
+function requestedInitialView() {
+  const params = new URLSearchParams(window.location.search);
+  const queryView = params.get("view");
+  if (VIEW_NAMES.has(queryView)) return queryView;
+  const hashView = window.location.hash.replace(/^#/, "");
+  if (VIEW_NAMES.has(hashView)) return hashView;
+  return "estado";
+}
 
 function staleWarnSeconds(summary) {
   const value = Number(summary?.frescura?.stale_after_seconds);
@@ -37,7 +47,7 @@ function isStaleWarning(summary) {
 }
 
 // --- STATE ----------------------------------------------------------------
-let activeView = "estado";
+let activeView = requestedInitialView();
 let currentViewRendered = null;
 let refreshTimer = null;
 let historySelectedCicloId = null;
