@@ -405,7 +405,7 @@ function normalizeSection(index, name, item) {
   if (horario === true) flags.push("Interna volatil obs.");
 
   const observedActive = typeof observed === "boolean" ? observed : flags.length > 0;
-  const defaultState = observedActive ? flags.join(" + ") : "Sin senal observada";
+  const defaultState = observedActive ? flags.join(" + ") : "No activa";
   const explicitText = explicitState !== null ? String(explicitState) : "";
   const state = flags.length ? defaultState : (explicitText || defaultState);
 
@@ -510,7 +510,7 @@ async function showResumen() {
         <div class="ops-kpis">
           ${metric("FINS", badge(fins.label, fins.cls), summary.fins_error || "Sin error global")}
           ${metric("Frescura", escapeHtml(formatAge(age)), freshnessHint)}
-          ${metric("Secciones con senal", escapeHtml(String(activeCount)), `${noSignalCount} sin senal observada`)}
+          ${metric("Secciones activas", escapeHtml(String(activeCount)), `${noSignalCount} no activas`)}
         </div>
       </div>
       <div class="sys-status-row merged">
@@ -547,8 +547,8 @@ async function showResumen() {
       : `<div class="empty success">No hay anomalias operativas en la ultima lectura.</div>`) +
     renderPanel("Secciones", `
       <div class="section-summary">
-        ${metric("Senal obs.", escapeHtml(String(counts.active)), "Auto calculada, orden manual o interna volatil")}
-        ${metric("Sin senal", escapeHtml(String(counts.off)), "Fila valida con flags observados falsos")}
+        ${metric("Señal obs.", escapeHtml(String(counts.active)), "Auto calculada, orden manual o interna volatil")}
+        ${metric("No activas", escapeHtml(String(counts.off)), "Fila valida con flags observados falsos")}
         ${metric("Fallos", escapeHtml(String(counts.bad)), "Lectura invalida FINS")}
         ${metric("Sin datos", escapeHtml(String(counts.unknown)), "Ausente o no disponible")}
       </div>
@@ -586,8 +586,8 @@ async function showSecciones() {
           <div class="filter-group" aria-label="Filtro de secciones">
             ${[
               ["all", `Todas ${counts.total}`],
-              ["active", `Con senal ${counts.active}`],
-              ["off", `Sin senal ${counts.off}`],
+              ["active", `Activas ${counts.active}`],
+              ["off", `No activas ${counts.off}`],
             ].map(([value, label]) => `
               <button type="button" class="filter-chip${sectionFilterState === value ? " active" : ""}" data-section-filter="${value}">
                 ${escapeHtml(label)}
@@ -692,7 +692,7 @@ function renderCicloDetail(ciclo, secciones) {
 
   return renderPanel(
     ts,
-    `<p class="sub">Ciclo #${escapeHtml(ciclo.id)} · ${escapeHtml(String(activeCount))} con senal observada</p>` +
+    `<p class="sub">Ciclo #${escapeHtml(ciclo.id)} · ${escapeHtml(String(activeCount))} activas</p>` +
     metaBlock + `<div class="section-grid" id="historySecGrid">${gridHtml}</div>`,
   );
 }
@@ -761,7 +761,7 @@ async function selectHistoryCiclo(cicloId) {
   } else {
     const rows = historySelectedSecciones.length ? normalizeSections(historySelectedSecciones) : [];
     const activeCount = rows.filter((r) => r.css === "state-active").length;
-    stateText = `${activeCount} secciones con senal observada`;
+    stateText = `${activeCount} secciones activas`;
   }
   setDetail("Ciclo", `#${cicloId}`, stateText, formatDateTime(ciclo?.timestamp));
 
