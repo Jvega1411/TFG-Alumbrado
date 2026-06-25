@@ -375,6 +375,18 @@ function normalizeSections(data) {
   });
 }
 
+function sectionStateLabel(value) {
+  const raw = String(value ?? "").trim();
+  const normalized = raw.toLowerCase().replaceAll(" ", "_");
+  if (normalized === "sin_senal_observada" || normalized === "sin_señal_observada") {
+    return "No activa";
+  }
+  if (normalized === "senal_observada_activa" || normalized === "señal_observada_activa") {
+    return "Activa";
+  }
+  return raw;
+}
+
 function normalizeSection(index, name, item) {
   if (!item || typeof item !== "object") {
     return { index, name, state: "Sin datos", css: "state-unknown", ts: "-" };
@@ -406,7 +418,7 @@ function normalizeSection(index, name, item) {
 
   const observedActive = typeof observed === "boolean" ? observed : flags.length > 0;
   const defaultState = observedActive ? flags.join(" + ") : "No activa";
-  const explicitText = explicitState !== null ? String(explicitState) : "";
+  const explicitText = explicitState !== null ? sectionStateLabel(explicitState) : "";
   const state = flags.length ? defaultState : (explicitText || defaultState);
 
   return {
